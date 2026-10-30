@@ -1,0 +1,46 @@
+# Dependencies and build output
+node_modules/
+dist/
+out/
+release/
+.venv/
+venv/
+
+# Test/tool caches and logs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+.ruff_cache/
+# Local credentials (only safe templates belong in Git)
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.coverage
+htmlcov/
+
+# Local tools and generated artifacts
+.tools/
+.uv-cache/
+.superpowers/
+artifacts/
+.cache/
+.npm/
+
+# Machine-specific AI configuration and session history
+/.agents/
+/.codex/
+/.trellis/workspace/
+/.trellis/tasks/
+/.trellis/agents/
+/.trellis/scripts/
+/.trellis/.template-hashes.json
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
