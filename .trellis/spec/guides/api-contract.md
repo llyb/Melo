@@ -55,3 +55,5 @@ main 将连接失败映射为 BACKEND_UNAVAILABLE，将 IPC 等待超时映射�
 IPC 返回可序列化联合类型 `{ok:true,data:...}` 或 `{ok:false,request_id,error:{code,message,retryable}}`，不依赖跨 IPC 抛异常保留字段。
 preload 仅暴露 health()、chat(messages)，main 验证 sender、负载和响应结构，URL/路径由 main 固定，不接受 renderer 指定 URL。
 不自动重试模型请求；用户手动重试可能再次计费，request_id 只作诊断，不承诺幂等。
+
+可选 LangSmith 监控沿用现有 request_id 作为根 trace ID，不新增 HTTP/IPC 字段或暴露监控 Key。只追踪 Agent 调用，不将鉴权失败或健康检查发送为聊天 trace。

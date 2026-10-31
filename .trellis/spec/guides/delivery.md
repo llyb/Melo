@@ -4,7 +4,7 @@
 
 开发任务交付必须提供：准确 Node/Python 版本、锁文件、`.env.example`（仅变量名和安全示例）、双终端启动命令、端口/token 配置、检查命令、离线测试结果与桌面冒烟记录。
 建议变量：MELO_LOCAL_TOKEN（main 和后端共用）、MODEL_API_KEY、MODEL_BASE_URL、MODEL_NAME（仅后端）。VITE_* 不放任何密钥。
-模型地址限定 HTTPS 智谱官方已确认端点；首版不提供用户自由输入 URL 的 UI。
+模型地址不锁定服务商；用户在后端 env 中配置 OpenAI Chat Completions 兼容服务的 MODEL_BASE_URL、MODEL_API_KEY 和 MODEL_NAME。允许 HTTP(S)，远程建议 HTTPS；拒绝 URL 内账号密码、查询参数、片段及无效端口。不提供模型配置 UI。
 
 后端单独启动，端口冲突应明确报错；Electron 后端未运行时提供启动提示，关闭 Electron 不杀死开发者启动的 Python 服务。
 仓库使用 https://github.com/llyb/Melo.git，main 分支；当前未配置远程 CI，不得假装 CI 已运行。

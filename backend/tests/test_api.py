@@ -9,7 +9,7 @@ async def test_health_and_chat_contract():
     from app.settings import Settings
 
     class Runner:
-        async def reply(self, messages):
+        async def reply(self, messages, *, request_id=None):
             return messages[-1].content
 
     app = create_app(Settings(local_token="local-test"), Runner())
@@ -66,7 +66,7 @@ async def test_concurrency_and_timeout_release():
     release = asyncio.Event()
 
     class Runner:
-        async def reply(self, messages):
+        async def reply(self, messages, *, request_id=None):
             started.set()
             await release.wait()
             return "ok"
@@ -101,7 +101,7 @@ async def test_error_mapping_and_slot_release(kind, status, code, caplog):
     class Runner:
         failed = False
 
-        async def reply(self, messages):
+        async def reply(self, messages, *, request_id=None):
             if self.failed:
                 return "recovered"
             self.failed = True
@@ -138,7 +138,7 @@ async def test_chunked_limit_unicode_and_total_context():
     from app.settings import Settings
 
     class Runner:
-        async def reply(self, messages):
+        async def reply(self, messages, *, request_id=None):
             return "ok"
 
     app = create_app(Settings(local_token="t"), Runner())
@@ -161,7 +161,7 @@ async def test_successful_long_assistant_reply_can_be_replayed():
     from app.settings import Settings
 
     class Runner:
-        async def reply(self, messages):
+        async def reply(self, messages, *, request_id=None):
             return "a" * 9000
 
     app = create_app(Settings(local_token="t"), Runner())

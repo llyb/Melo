@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import logging
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -26,7 +27,16 @@ class ChatError(Exception):
 
 def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     settings = settings or Settings.from_env()
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            if isinstance(app.state.runner, AgentRunner):
+                await asyncio.to_thread(app.state.runner.close)
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.chat_timeout = 60
     app.state.busy = False
     app.state.runner = runner
@@ -98,7 +108,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
             if app.state.runner is None:
                 app.state.runner = AgentRunner(settings)
             async with asyncio.timeout(app.state.chat_timeout):
-                text = await app.state.runner.reply(payload.messages)
+                text = await app.state.runner.reply(payload.messages, request_id=request.state.request_id)
             if not isinstance(text, str) or not text.strip() or len(text) > 16000:
                 raise InvalidOutputError
             return {"request_id": request.state.request_id,

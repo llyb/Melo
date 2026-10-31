@@ -1,7 +1,7 @@
 # Melo
 
 Vue 3 + Electron 桌面对话工作台，Python FastAPI + Deep Agents 提供中文多轮对话。
-开发版使用 Z.AI 标准 API；纯文本、非流式，历史仅保留在当前窗口内存。关闭、刷新或新建会话后清空。
+开发版支持通过环境变量配置 OpenAI Chat Completions 兼容模型服务；纯文本、非流式，历史仅保留在当前窗口内存。关闭、刷新或新建会话后清空。
 
 ## 启动
 
@@ -10,7 +10,10 @@ Vue 3 + Electron 桌面对话工作台，Python FastAPI + Deep Agents 提供中�
 核心版本：Electron 42.11.18、Deep Agents 0.7.32、FastAPI 0.162.0。
 
 仓库只提供不含密钥的 `.env.example`，本地 `.env` 不提交。
-启动前在 `backend/.env` 中填写有效的 Z.AI **标准 API Key**。
+启动前在 `backend/.env` 中填写模型服务的 `MODEL_BASE_URL`、`MODEL_API_KEY` 和 `MODEL_NAME`。
+`MODEL_BASE_URL` 是服务商提供的 API 基础地址（如 `https://gateway.example/v1`），不要填完整的 `/chat/completions` 地址。
+支持 HTTP(S) 地址，包括本机或局域网服务；远程服务建议使用 HTTPS。地址不能包含账号密码、查询参数或片段。
+`MODEL_NAME` 填该服务实际支持的模型 ID；仅有地址和 Key 无法确定要调用哪个模型。
 不要把模型 Key 填入 desktop/.env 或 VITE_*。
 
 新检出项目时，先将 backend/.env.example 和 desktop/.env.example 分别复制为 .env，生成随机令牌（PowerShell `[guid]::NewGuid().ToString()`），将相同值填入两处 MELO_LOCAL_TOKEN。
@@ -59,10 +62,12 @@ npm run test:desktop
 默认测试不调用付费模型。`test:desktop` 会启动实际 Electron 和只在测试使用的本地替身模型后端；请先停止占用 8000 的开发后端。
 它验证真实 Deep Agents 图、IPC、两轮上下文、重置，以及后端停止/恢复后的输入保留和重试。截图在部分桌面会话不可用，不跳过功能断言。
 
-真实模型测试会产生少量 API 消耗：在 backend 终端显式配置 MODEL_API_KEY 后运行 `.venv/Scripts/python.exe -m tests.live_smoke`。不输出或保存密钥和对话正文。
+真实模型测试会产生少量 API 消耗：配置 backend/.env 中的 MODEL_BASE_URL、MODEL_API_KEY、MODEL_NAME 后，在 backend 终端运行 `.venv/Scripts/python.exe -m tests.live_smoke`。它使用与应用相同的配置，不输出或保存密钥和对话正文。
 手动重试可能再次计费；本地超时不保证上游停止生成。
 
 ## 结构与规范
+
+LangSmith 指标监控已接入后端，默认关闭，只记录调用链、耗时、错误状态和 token 用量，隐藏对话正文。首次开通与本机配置见 [LangSmith 接入说明](docs/langsmith.md)。
 
 - desktop/src/main：窗口、安全 IPC 和本地 HTTP；preload：仅暴露 health/chat。
 - desktop/src/renderer：Vue 对话页；backend/app：验证、统一错误和 Deep Agents 运行。

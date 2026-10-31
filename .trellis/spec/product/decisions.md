@@ -11,7 +11,7 @@
 | 前端 | Vue + Electron |
 | Agent 框架 | Deep Agents |
 | 交付 | 先开发运行，暂不制作安装包 |
-| 模型服务 | Z.AI 标准 API，用户指定 https://api.z.ai/api/paas/v4 |
+| 模型服务 | 2026-10-31 用户修订：不限定 Z.AI，通过后端 env 配置任意 OpenAI Chat Completions 兼容服务的 base URL、API Key 和模型 ID |
 
 ## 已接受的默认值
 
@@ -22,19 +22,23 @@
 | 前端构建 | Vue 3、TypeScript strict、electron-vite、npm | 先不用 UI 库、Router、Pinia |
 | 交互与输出 | 中文界面，纯文本，非流式 HTTP；等待中禁用发送 | 流式需另定事件、取消与断线语义 |
 | 上下文 | 一窗口一会话；前端内存保留全部成功轮次，每次显式提交 | 不使用数据库或 checkpointer；刷新/重启丢失 |
-| 模型配置 | 后端环境变量；单一 GLM 模型，无切换 UI | 后续设置页需补密钥存储方案 |
+| 模型配置 | 后端环境变量；每次运行使用一个配置的模型，无切换 UI | 后续设置页需补密钥存储方案 |
 | 后端启动 | 开发者单独启动 Python；Electron 探活并报错 | 首次不做 Python 打包或自动进程管理 |
 | 能力边界 | 文本对话，不接 MCP、Obsidian、真实文件系统、shell 或外部工具 | 记忆和知识库属于后续独立任务 |
 
 ## 模型接入修正
 
-- 用户指定标准 API `https://api.z.ai/api/paas/v4`，使用 OpenAI Chat Completions 兼容协议；不再使用 Coding Plan 端点。
+- 最初用户指定 Z.AI 标准 API；2026-10-31 修订后不再锁定服务商。使用 OpenAI Chat Completions 兼容协议，`MODEL_BASE_URL`、`MODEL_API_KEY`、`MODEL_NAME` 由用户在后端 env 配置，修改后重启后端。
+- base URL 支持 HTTP(S)，包含本机/局域网服务；不含账号密码、查询参数、片段或完整 chat/completions 路径。远程凭据建议通过 HTTPS 传输。仅有可访问地址和 Key 不代表协议或模型权限可用，必须填写对应模型 ID。
+- GLM-5.3 系列请求启用 thinking 并使用 reasoning_effort=low，避免上游 400/1210；其他模型不发送这些专用字段。不返回模型推理正文。
 - 默认模型 `glm-5.3` 取自 Z.AI 官方快速开始，作为实施方选择，可通过 MODEL_NAME 修改；本轮已用临时进程凭据完成 glm-5.3 两轮真实 Deep Agents 校验。
-- Key 仅后端本机环境变量 MODEL_API_KEY。用户曾在聊天粘贴 Key，不复制到任何仓库文件或日志；建议更换后再联调。
+- 各服务商 Key 仅后端本机环境变量 MODEL_API_KEY。用户曾在聊天粘贴 Key，不复制到任何仓库文件或日志；建议更换后再联调。
 - 真实联调需可用的本机凭据，离线测试不需要凭据。
 - 本机现有 Python 3.13；实现兼容 Python 3.12+，测试后记录实际版本。
 
 ## 版本策略
+
+用户于 2026-10-30 授权接入 LangSmith，仅记录指标并隐藏对话正文。默认美国区、项目/Agent 名 melo；新 workspace 使用 Observability Agent + development 环境，旧 workspace 使用项目名。监控默认关闭，本机凭据配置后显式开启；云端验证状态见 docs/langsmith.md。
 
 实现时验证 Python 3.12 与依赖的兼容性，选择受支持 Node LTS 和 Electron，记录准确运行时版本。
 提交 package-lock.json 和 uv.lock；CI 使用 npm ci、uv sync --frozen。本文不凭空指定未安装验证的库版本。

@@ -2,7 +2,7 @@
 name = "melo-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["fastapi>=0.115", "uvicorn>=0.34", "deepagents>=0.5", "langchain-openai>=1.0", "python-dotenv>=1.0"]
+dependencies = ["fastapi>=0.115", "uvicorn>=0.34", "deepagents>=0.5", "langchain-openai>=1.0", "python-dotenv>=1.0", "langsmith>=0.14.16,<0.15"]
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=1", "httpx>=0.28", "ruff>=0.12"]
