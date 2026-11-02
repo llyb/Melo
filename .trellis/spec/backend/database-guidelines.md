@@ -1,3 +1,6 @@
+> 2026-11-02 catalog v2 新增临时 run_inputs、200项run_events与mutation_receipts；接受元数据/输入/首事件同事务，输入checkpoint引用保存后清除outbox。rename/head/publish字段在短BEGIN IMMEDIATE事务读改写，禁止旧快照回写覆盖新标题/版本。最后核对回执与解除needs_reconciliation同事务；v1升级保留历史，备份/回退复制完整停止后的data目录。
+> 有外部副作用时不从base全轮重跑。MCP写前落executing，成功后succeeded；应答或回执提交不确定则先核对。相同tool_call_id/参数hash回放成功回执不再写。启动先捕获最新原生checkpoint，再分流未知回执；等待审批保留，其他中断需手动恢复。无外部回执且未审批的终态无效回答允许从base新attempt；checkpoint有效终态仅重发目录发布，不重调模型。删除会话不删除或回滚Obsidian笔记。
+
 # 存储边界
 
 2026-11-02用户批准多会话及会话内虚拟文件持久化，覆盖初始仅内存约定。使用官方AsyncSqliteSaver + StateBackend，每会话独立thread_id；应用catalog只保存目录、请求状态和checkpoint引用，不另存聊天或文件正文。

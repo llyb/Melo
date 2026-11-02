@@ -9,6 +9,7 @@ from app.agent import AgentRunner
 from app.main import create_app
 from app.settings import Settings
 from tests.test_agent import LocalModel
+from tests.test_background_api import terminal
 
 
 async def test_sessions_send_replay_restart_and_delete(tmp_path):
@@ -25,9 +26,10 @@ async def test_sessions_send_replay_restart_and_delete(tmp_path):
                     payload = {"turn_id": str(uuid4()), "expected_revision": 0, "content": "小明"}
                     url = f'/api/v1/sessions/{sid}/turns'
                     sent = await c.post(url, json=payload)
-                    assert sent.status_code == 200, sent.text
+                    assert sent.status_code == 202, sent.text
+                    assert (await terminal(c, payload["turn_id"]))["status"] == "completed"
                     count = len(model.seen)
-                    assert (await c.post(url, json=payload)).status_code == 200
+                    assert (await c.post(url, json=payload)).status_code == 202
                     assert len(model.seen) == count
                     conflict = {**payload, 'content': 'other'}
                     assert (await c.post(url, json=conflict)).status_code == 409
@@ -53,14 +55,19 @@ async def test_finished_checkpoint_recovers_after_catalog_publish_failure(tmp_pa
         body = {"turn_id": str(uuid4()), "expected_revision": 0, "content": "safe"}
         url = f'/api/v1/sessions/{sid}/turns'
         failed = await client.post(url, json=body)
-        assert failed.status_code == 503
+        assert failed.status_code == 202
+        state = await terminal(client, body["turn_id"])
+        assert state["status"] == "interrupted"
+        assert state["error"]["code"] == "STORAGE_UNAVAILABLE"
         assert 'private storage detail' not in failed.text
         count = len(model.seen)
         monkeypatch.setattr(app.state.catalog, 'publish', original)
-        replay = await client.post(url, json=body)
+        replay = await client.post(f"/api/v1/runs/{body['turn_id']}/resume", json={})
         assert replay.status_code == 200, replay.text
+        replay_data = await terminal(client, body["turn_id"])
+        assert replay_data["status"] == "completed"
         assert len(model.seen) == count
-        assert replay.json()['session']['revision'] == 1
+        assert replay_data['session']['revision'] == 1
 
 
 @pytest.mark.parametrize('patch', [
@@ -95,8 +102,10 @@ async def test_text_blocks_remain_readable_and_legacy_first_keeps_saver(tmp_path
         sid = (await client.post('/api/v1/sessions', json={})).json()['id']
         body = {"turn_id": str(uuid4()), "expected_revision": 0, "content": "blocks"}
         sent = await client.post(f'/api/v1/sessions/{sid}/turns', json=body)
-        assert sent.status_code == 200, sent.text
-        assert sent.json()['messages'][1]['content'] == 'answer'
+        assert sent.status_code == 202, sent.text
+        result = await terminal(client, body['turn_id'])
+        assert result['status'] == 'completed', result
+        assert result['messages'][1]['content'] == 'answer'
         assert (await client.get(f'/api/v1/sessions/{sid}')).json()['messages'][1]['content'] == 'answer'
 
 
@@ -105,27 +114,31 @@ async def test_native_turn_timeout_releases_gate_and_retry_does_not_append_twice
     runner = AgentRunner(settings, model=LocalModel())
     app = create_app(settings, runner)
     started, release = asyncio.Event(), asyncio.Event()
-    original = runner.run_turn
+    original = runner.execute_run
     async def delayed(*args):
         started.set()
         await release.wait()
         return await original(*args)
-    monkeypatch.setattr(runner, 'run_turn', delayed)
+    monkeypatch.setattr(runner, 'execute_run', delayed)
     async with app.router.lifespan_context(app), AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test",
             headers={"Authorization": "Bearer t"}) as client:
         sid = (await client.post('/api/v1/sessions', json={})).json()['id']
         url = f'/api/v1/sessions/{sid}/turns'
         body = {"turn_id": str(uuid4()), "expected_revision": 0, "content": "hi"}
-        app.state.chat_timeout = 0.05
-        first = asyncio.create_task(client.post(url, json=body))
+        app.state.runs.time_limit = 0.05
+        assert (await client.post(url, json=body)).status_code == 202
         await started.wait()
-        assert (await client.post(url, json=body)).status_code == 429
-        assert (await client.delete(f'/api/v1/sessions/{sid}')).status_code == 429
-        assert (await first).status_code == 504
+        assert (await client.post(url, json={**body, 'turn_id': str(uuid4())})).status_code == 409
+        assert (await client.delete(f'/api/v1/sessions/{sid}')).status_code == 409
+        failed = await terminal(client, body['turn_id'])
+        assert failed['status'] == 'failed'
+        assert failed['error']['code'] == 'MODEL_TIMEOUT'
         release.set()
-        app.state.chat_timeout = 60
-        assert (await client.post(url, json=body)).status_code == 200
+        app.state.runs.time_limit = 120
+        await asyncio.sleep(0.05)
+        assert (await client.post(f"/api/v1/runs/{body['turn_id']}/resume", json={})).status_code == 200
+        assert (await terminal(client, body['turn_id']))['status'] == 'completed'
         assert len((await client.get(f'/api/v1/sessions/{sid}')).json()['messages']) == 2
 
 
@@ -145,3 +158,31 @@ async def test_interrupted_deletion_is_finished_at_startup_without_model_key(tmp
         title = await client.patch(f"/api/v1/sessions/{b['id']}", json={'title': ' ' + '😀' * 80 + ' '})
         assert title.status_code == 200
         assert title.json()['title'] == '😀' * 80
+
+
+async def test_invalid_final_output_retries_new_attempt_without_duplicate_user(tmp_path):
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    class OnceInvalid(LocalModel):
+        calls: int = 0
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.calls += 1
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                content='' if self.calls == 1 else 'recovered'))])
+    settings = Settings(local_token='t', data_dir=tmp_path)
+    model = OnceInvalid()
+    app = create_app(settings, AgentRunner(settings, model=model))
+    async with app.router.lifespan_context(app), AsyncClient(
+            transport=ASGITransport(app=app), base_url='http://test',
+            headers={'Authorization': 'Bearer t'}) as client:
+        sid = app.state.catalog.create()['id']
+        rid = str(uuid4())
+        await client.post(f'/api/v1/sessions/{sid}/turns', json={
+            'turn_id': rid, 'expected_revision': 0, 'content': 'input'})
+        assert (await terminal(client, rid))['status'] == 'failed'
+        assert (await client.post(f'/api/v1/runs/{rid}/resume', json={})).status_code == 200
+        result = await terminal(client, rid)
+        assert result['status'] == 'completed', result
+        assert result['messages'][1]['content'] == 'recovered'
+        assert model.calls == 2
+        assert len((await client.get(f'/api/v1/sessions/{sid}')).json()['messages']) == 2

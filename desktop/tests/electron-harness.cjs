@@ -31,12 +31,16 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
     const health = await execute('window.melo.health()')
     assert.equal(health.ok, true)
     const submit = async text => {
+      const count = await execute('document.querySelectorAll(".assistant").length')
       await execute(`(() => { const el = document.querySelector('textarea'); el.value = ${JSON.stringify(text)}; el.dispatchEvent(new Event('input', {bubbles:true})); })()`)
       await delay(100)
       await execute('document.querySelector("form.composer").requestSubmit()')
+      assert.equal(await execute('document.querySelector("textarea").value'), '')
+      assert.equal(await execute('document.querySelector("textarea").disabled'), false)
+      assert.equal(await execute('document.querySelector(".new-chat").disabled'), false)
       for (let i = 0; i < 100; i++) {
         await delay(100)
-        if (await execute('!document.querySelector("textarea").disabled')) return
+        if (await execute('document.querySelectorAll(".assistant").length > ' + count + ' || !!document.querySelector("[role=alert]")')) return
       }
       throw new Error('UI response timed out')
     }
@@ -65,8 +69,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
     await delay(300)
     assert.equal((await execute('window.melo.health()')).ok, false)
     await submit('恢复测试')
-    assert.equal(await execute('document.querySelectorAll(".message").length'), 0)
-    assert.equal(await execute('document.querySelector("textarea").value'), '恢复测试')
+    assert.equal(await execute('document.querySelectorAll(".message").length'), 1)
+    assert.equal(await execute('document.querySelector("textarea").value'), '')
     assert.equal(await execute('!!document.querySelector("[role=alert]")'), true)
     restartedBackend = spawn(join(__dirname, '../../backend/.venv/Scripts/python.exe'), ['-m', 'uvicorn', 'tests.smoke_server:app', '--host', '127.0.0.1', '--port', process.env.SMOKE_PORT, '--no-access-log'], { cwd: join(__dirname, '../../backend'), env: process.env, windowsHide: true, stdio: 'ignore' })
     let ready = false
@@ -80,7 +84,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
       await delay(100)
       if (await execute('document.querySelectorAll(".message").length === 2')) break
     }
-    assert.equal(await execute('document.querySelectorAll(".message").length'), 2)
+    assert.equal(await execute('document.querySelectorAll(".message").length'), 2,
+      await execute('document.querySelector(".run-activity")?.textContent + " / " + document.querySelector(".error")?.textContent'))
     assert.equal(await execute('document.querySelector("textarea").value'), '')
     await execute('document.querySelector(".new-chat").click()')
     await delay(500)

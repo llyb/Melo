@@ -1,13 +1,12 @@
 import asyncio
-import hashlib
 import sqlite3
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.agent import AgentRunner, InvalidOutputError
+from app.runs import ACTIVE
 
 
 class NewSession(BaseModel):
@@ -45,6 +44,15 @@ class Turn(NewSession):
         return value
 
 
+class ApprovalDecision(NewSession):
+    decision: Literal["approve", "reject"]
+
+
+class Reconciliation(NewSession):
+    decision: Literal["accept_current"]
+    observed_version: str = Field(min_length=1, max_length=1024)
+
+
 def register_sessions(app, settings, Error):
     async def db(method, *args):
         try:
@@ -54,69 +62,26 @@ def register_sessions(app, settings, Error):
         except (sqlite3.Error, OSError):
             raise Error(503, "STORAGE_UNAVAILABLE", "本地存储暂不可用，请重试。", True) from None
 
-    def graph():
-        if app.state.runner is None:
-            app.state.runner = AgentRunner(settings, checkpointer=app.state.saver)
-        return app.state.runner
-
-    async def pair(turn):
-        messages = []
-        for role, cp, mid in (("user", "input_checkpoint_id", "user_message_id"),
-                              ("assistant", "result_checkpoint_id", "assistant_message_id")):
-            state = await graph().graph.aget_state({"configurable": {
-                "thread_id": turn["session_id"], "checkpoint_id": turn[cp]}})
-            message = next((m for m in state.values.get("messages", []) if m.id == turn[mid]), None)
-            content = message.content if message is not None else None
-            if role == "assistant" and isinstance(content, list) and all(
-                    isinstance(b, dict) and b.get("type") == "text"
-                    and isinstance(b.get("text"), str) for b in content):
-                content = "".join(b["text"] for b in content)
-            if not isinstance(content, str) or not content.strip():
-                raise Error(503, "STORAGE_UNAVAILABLE", "历史记录读取失败。", True)
-            messages.append({"id": message.id, "role": role, "content": content})
-        return messages
-
-    async def recover(sid):
-        for turn in await db("requests", sid):
-            if turn["status"] != "running":
-                continue
-            try:
-                result = await graph().find_result(sid, turn["turn_id"], turn["attempt_no"])
-            except InvalidOutputError:
-                turn["status"] = "failed"
-                await db("save_request", turn)
-            else:
-                content = (await pair({**turn, **result}))[0]["content"]
-                await db("publish", turn, result, content)
-
-    async def cleanup():
-        for session in await db("all"):
-            if session["lifecycle"] == "deleting":
-                await app.state.saver.adelete_thread(session["id"])
-                await db("remove", session["id"])
-            else:
-                await recover(session["id"])
-    app.state.recover_sessions = cleanup
-
-    def guard():
-        if app.state.busy:
-            raise Error(429, "RATE_LIMITED", "请等待当前操作完成。", True)
+    async def summary(session):
+        view = app.state.catalog.summary(session)
+        pending = next((r for r in reversed(await db("requests", session["id"]))
+                        if r["status"] in ACTIVE), None)
+        view["active_run"] = app.state.runs.accepted(pending) if pending else None
+        return view
 
     @app.get("/api/v1/sessions")
     async def listing(request: Request, limit: Annotated[int, Query(ge=1, le=100)] = 50,
                       offset: Annotated[int, Query(ge=0)] = 0):
         if set(request.query_params) - {"limit", "offset"}:
             raise Error(422, "INVALID_REQUEST", "分页参数无效。")
-        return await db("list", limit, offset)
+        data = await db("list", limit, offset)
+        data["items"] = [await summary(item) for item in data["items"]]
+        return data
 
     @app.post("/api/v1/sessions", status_code=201)
     async def create(payload: NewSession):
-        guard()
-        app.state.busy = True
-        try:
-            return await db("create")
-        finally:
-            app.state.busy = False
+        session = await db("create")
+        return await summary(session)
 
     @app.get("/api/v1/sessions/{sid}")
     async def detail(sid: UUID, request: Request,
@@ -124,12 +89,6 @@ def register_sessions(app, settings, Error):
                      before_seq: Annotated[int | None, Query(ge=1)] = None):
         if set(request.query_params) - {"limit", "before_seq"}:
             raise Error(422, "INVALID_REQUEST", "分页参数无效。")
-        if not app.state.busy:
-            app.state.busy = True
-            try:
-                await recover(str(sid))
-            finally:
-                app.state.busy = False
         session = await db("get", str(sid))
         turns = await db("requests", str(sid))
         completed = sorted((t for t in turns if t["status"] == "completed"
@@ -138,80 +97,86 @@ def register_sessions(app, settings, Error):
         page = completed[-limit:]
         messages = []
         for turn in page:
-            messages.extend(await pair(turn))
+            messages.extend(await app.state.runs.pair(turn))
         pending = next((t for t in reversed(turns) if t["status"] != "completed"
+                        and t["status"] != "abandoned"
                         and t["expected_revision"] == session["revision"]), None)
         pending_view = None
         if pending:
+            try:
+                content = await app.state.runs.content(pending)
+            except Error:
+                content = None
             pending_view = {"turn_id": pending["turn_id"], "status": pending["status"],
-                            "expected_revision": pending["expected_revision"], "content": None}
-            async for snapshot in graph().graph.aget_state_history(
-                    {"configurable": {"thread_id": str(sid)}}):
-                message = next((m for m in snapshot.values.get("messages", [])
-                                if m.id == pending["turn_id"]), None)
-                if message is not None and isinstance(message.content, str):
-                    pending_view["content"] = message.content
-                    break
-        return {"session": app.state.catalog.summary(session), "messages": messages,
+                            "expected_revision": pending["expected_revision"], "content": content}
+        failed_turns = []
+        for failed in [t for t in turns if t["status"] == "failed"][-20:]:
+            try:
+                text = await app.state.runs.content(failed)
+            except Error:
+                continue
+            failed_turns.append({"run_id": failed["turn_id"], "content": text})
+        return {"session": await summary(session), "messages": messages,
                 "has_more": len(completed) > limit,
                 "next_before_seq": page[0]["seq"] if len(completed) > limit else None,
-                "pending_turn": pending_view}
+                "pending_turn": pending_view, "failed_turns": failed_turns}
 
     @app.patch("/api/v1/sessions/{sid}")
     async def rename(sid: UUID, payload: Title):
-        guard()
-        app.state.busy = True
-        try:
-            return await db("rename", str(sid), payload.title)
-        finally:
-            app.state.busy = False
+        return await summary(await db("rename", str(sid), payload.title))
 
     @app.delete("/api/v1/sessions/{sid}")
     async def delete(sid: UUID):
-        guard()
-        app.state.busy = True
-        try:
+        # Acceptance and deletion share the same short lifecycle lock.
+        async with app.state.runs.lock:
+            await db("get", str(sid))
+            if any(r["status"] in ACTIVE for r in await db("requests", str(sid))):
+                raise Error(409, "RUN_ACTIVE", "请先完成或结束该会话的未决运行。")
             await db("mark_deleting", str(sid))
             await app.state.saver.adelete_thread(str(sid))
             await db("remove", str(sid))
-            return {"deleted_id": str(sid)}
-        finally:
-            app.state.busy = False
+        return {"deleted_id": str(sid)}
 
-    @app.post("/api/v1/sessions/{sid}/turns")
+    @app.post("/api/v1/sessions/{sid}/turns", status_code=202)
     async def send(sid: UUID, payload: Turn, request: Request):
-        guard()
-        app.state.busy = True
-        try:
-            sid = str(sid)
-            if not app.state.runner_injected and not settings.model_configured:
-                raise Error(503, "MODEL_NOT_CONFIGURED", "请在后端配置模型 API Key。")
-            runner = graph()
-            await db("get", sid)
-            await recover(sid)
-            session = await db("get", sid)
-            digest = hashlib.sha256(payload.content.encode()).hexdigest()
-            turn = await db("request", payload.turn_id)
-            if turn and (turn["session_id"] != sid or turn["input_hash"] != digest
-                         or turn["expected_revision"] != payload.expected_revision):
-                raise Error(409, "TURN_CONFLICT", "请求编号已用于不同输入。")
-            if not turn or turn["status"] != "completed":
-                if payload.expected_revision != session["revision"]:
-                    raise Error(409, "SESSION_CONFLICT", "会话已更新，请刷新后重试。")
-                if session["head_checkpoint_id"] is None:
-                    session["head_checkpoint_id"] = await runner.initialize_thread(sid)
-                    await db("save", session)
-                turn = {"turn_id": payload.turn_id, "session_id": sid, "input_hash": digest,
-                            "expected_revision": payload.expected_revision,
-                            "base_checkpoint_id": session["head_checkpoint_id"], "status": "running",
-                            "attempt_no": (turn["attempt_no"] + 1 if turn else 1)}
-                await db("save_request", turn)
-                async with asyncio.timeout(app.state.chat_timeout):
-                    result = await runner.run_turn(sid, payload.turn_id, turn["attempt_no"],
-                        turn["base_checkpoint_id"], payload.content, request.state.request_id)
-                await db("publish", turn, result, payload.content)
-            return {"request_id": request.state.request_id, "turn_id": payload.turn_id,
-                    "session": app.state.catalog.summary(await db("get", sid)),
-                    "messages": await pair(await db("request", payload.turn_id))}
-        finally:
-            app.state.busy = False
+        await db("get", str(sid))
+        return await app.state.runs.accept(str(sid), payload, request.state.request_id)
+
+    @app.get("/api/v1/runs/{rid}")
+    async def run_state(rid: UUID, request: Request,
+                        after_seq: Annotated[int, Query(ge=0)] = 0):
+        if set(request.query_params) - {"after_seq"}:
+            raise Error(422, "INVALID_REQUEST", "游标参数无效。")
+        return await app.state.runs.snapshot(str(rid), after_seq)
+
+    @app.post("/api/v1/runs/{rid}/approvals/{aid}")
+    async def decide(rid: UUID, aid: UUID, payload: ApprovalDecision):
+        return await app.state.runs.decide(str(rid), str(aid), payload.decision)
+
+    @app.post("/api/v1/runs/{rid}/resume")
+    async def resume(rid: UUID, payload: NewSession):
+        return await app.state.runs.resume(str(rid))
+
+    @app.post("/api/v1/runs/{rid}/reprepare-approval")
+    async def reprepare(rid: UUID, payload: NewSession):
+        return await app.state.runs.resume(str(rid), reprepare=True)
+
+    @app.post("/api/v1/runs/{rid}/end")
+    async def end(rid: UUID, payload: NewSession):
+        return await app.state.runs.end(str(rid))
+
+    @app.get("/api/v1/runs/{rid}/reconciliation/{call_id}")
+    async def inspect(rid: UUID, call_id: str):
+        return await app.state.runs.reconcile(str(rid), call_id)
+
+    @app.post("/api/v1/runs/{rid}/reconciliation/{call_id}")
+    async def reconcile(rid: UUID, call_id: str, payload: Reconciliation):
+        return await app.state.runs.reconcile(str(rid), call_id, payload.observed_version)
+
+    @app.get("/api/v1/obsidian/status")
+    async def obsidian_status():
+        return app.state.obsidian.status()
+
+    @app.post("/api/v1/obsidian/recheck")
+    async def obsidian_recheck(payload: NewSession):
+        return await app.state.obsidian.connect()

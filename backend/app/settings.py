@@ -22,6 +22,10 @@ class Settings:
     langsmith_agent_environment: str = "development"
     data_dir: Path = field(default_factory=lambda: Path(os.getenv(
         "LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "Melo" / "data")
+    obsidian_enabled: bool = False
+    obsidian_url: str = "https://127.0.0.1:27124/mcp/"
+    obsidian_api_key: str = field(default="", repr=False)
+    obsidian_ca_file: str = ""
 
     def __post_init__(self):
         try:
@@ -72,4 +76,8 @@ class Settings:
             langsmith_workspace_id=os.getenv("LANGSMITH_WORKSPACE_ID", "").strip(),
             langsmith_agent_id=os.getenv("LANGSMITH_AGENT_ID", "").strip(),
             langsmith_agent_environment=os.getenv("LANGSMITH_AGENT_ENVIRONMENT", "development").strip(),
+            obsidian_enabled=os.getenv("OBSIDIAN_MCP_ENABLED", "false").lower() == "true",
+            obsidian_url=os.getenv("OBSIDIAN_MCP_URL", "https://127.0.0.1:27124/mcp/"),
+            obsidian_api_key=os.getenv("OBSIDIAN_API_KEY", ""),
+            obsidian_ca_file=os.getenv("OBSIDIAN_CA_FILE", ""),
         )

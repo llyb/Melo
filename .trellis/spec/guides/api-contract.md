@@ -1,3 +1,8 @@
+> 2026-11-02 后台 run 合同覆盖下文旧同步 turns 与全局 busy 约定。`POST /sessions/{id}/turns` 接受相同负载，先落盘再返回 202 `{run_id,turn_id,session_id,status}`。run_id=turn_id，稳定 ID 幂等。SessionSummary 增加 active_run；详情增加 failed_turns（最近20条，仅run_id/content），保留 pending_turn。
+> `GET /runs/{id}?after_seq=0` 返回身份、session、status、created_at/updated_at/spent、受控 error、最多200项 events/cursor/gap、messages/content、approvals/mutations。事件只含seq/kind/label/at/path及三种身份，不含正文或原始参数；环形保留200条。状态为 accepted/running/awaiting_approval/interrupted/needs_reconciliation/completed/failed/abandoned。
+> `POST /runs/{id}/approvals/{aid}` 接受 `{decision:approve|reject}`；`POST /runs/{id}/resume|reprepare-approval|end` 接受严格 `{}`；`GET /runs/{id}/reconciliation/{call}` 只返回id/path/observed_version/matches_target，POST 接受 `{decision:accept_current,observed_version}`。核对不宣称执行成功，不自动重写。`GET /obsidian/status` 与 `POST /obsidian/recheck {}` 仅返回 enabled/status/write_supported。
+> 同会话未决409、全局第6运行429；审批等待不占容量。CRUD/状态IPC 10秒，生成120秒活跃预算、递归25；关闭前端不取消后端。旧 /chat 维持60秒并与run共享5个名额，不挂Obsidian写工具。renderer仅可调用具名IPC，main固定路由并校验身份/状态/响应。
+
 # 持久会话API（2026-11-02）
 
 沿用本地Bearer token、loopback、请求体1MiB、统一错误envelope和安全IPC；renderer不能指定URL/路径/原始graph配置。

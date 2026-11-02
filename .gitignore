@@ -14,6 +14,7 @@ pytest-cache-files-*/
 .ruff_cache/
 .test-tmp*/
 .smoke-debug/
+.local/
 # Local credentials (only safe templates belong in Git)
 .env
 .env.*

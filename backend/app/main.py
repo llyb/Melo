@@ -16,6 +16,8 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
 from app.agent import AgentRunner, InvalidOutputError
+from app.obsidian import Obsidian
+from app.runs import RunManager
 from app.schemas import ChatRequest
 from app.session_api import register_sessions
 from app.sessions import SessionCatalog
@@ -29,7 +31,7 @@ class ChatError(Exception):
         self.status, self.code, self.message, self.retryable = status, code, message, retryable
 
 
-def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
+def create_app(settings: Settings | None = None, runner=None, obsidian=None) -> FastAPI:
     settings = settings or Settings.from_env()
 
     @asynccontextmanager
@@ -40,12 +42,16 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
                 str(settings.data_dir / "checkpoints.sqlite3")) as saver:
             await saver.setup()
             app.state.saver = saver
+            app.state.obsidian = obsidian or Obsidian(settings)
+            await app.state.obsidian.connect()
+            app.state.runs = RunManager(app, settings, ChatError)
             if isinstance(app.state.runner, AgentRunner):
                 app.state.runner.graph.checkpointer = saver
             try:
-                await app.state.recover_sessions()
+                await app.state.runs.recover()
                 yield
             finally:
+                await app.state.runs.close()
                 if isinstance(app.state.runner, AgentRunner):
                     await asyncio.to_thread(app.state.runner.close)
 
@@ -144,10 +150,16 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
             raise ChatError(429, "RATE_LIMITED", "服务繁忙，请稍后重试。", True)
         if not app.state.runner_injected and not settings.model_configured:
             raise ChatError(503, "MODEL_NOT_CONFIGURED", "请在后端配置模型 API Key。")
+        manager = getattr(app.state, "runs", None)
+        if manager:
+            async with manager.lock:
+                if app.state.busy or not manager.capacity():
+                    raise ChatError(429, "RATE_LIMITED", "最多5个会话同时运行。", True)
+                manager.legacy_active += 1
         app.state.busy = True
         try:
             if app.state.runner is None:
-                app.state.runner = AgentRunner(settings, checkpointer=getattr(app.state, "saver", None))
+                app.state.runner = AgentRunner(settings, checkpointer=getattr(app.state, "saver", None), obsidian=getattr(app.state, "obsidian", None))
             async with asyncio.timeout(app.state.chat_timeout):
                 text = await app.state.runner.reply(payload.messages, request_id=request.state.request_id)
             if not isinstance(text, str) or not text.strip() or len(text) > 16000:
@@ -164,5 +176,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
             raise ChatError(502, "UPSTREAM_ERROR", "模型服务暂时不可用，请重试。", True) from None
         finally:
             app.state.busy = False
+            if manager:
+                manager.legacy_active -= 1
 
     return app

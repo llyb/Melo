@@ -27,4 +27,22 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #64856e; outli
 .session-row.active { background:#e3e6db; }
 .session-row button { background:transparent; border:0; padding:9px 5px; color:inherit; cursor:pointer; }
 .session-row button:first-child { flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
-.title-editor { padding:16px; display:flex; gap:12px; align-items:center; }
+.inline-title { display:flex; flex-wrap:wrap; align-items:center; gap:2px; width:100%; padding:4px; }
+.inline-title input { flex:1; width:60px; min-width:0; border:1px solid #9dac92; border-radius:4px; background:#fdfdf9; color:inherit; padding:6px; font:inherit; font-size:12px; }
+.inline-title small { width:100%; color:#915b3a; font-size:10px; }
+.inline-title input:focus-visible { outline:2px solid #64856e; }
+.run-badge { display:block; color:#728368; font-size:9px; margin-top:3px; }
+.run-activity { max-width:700px; margin:0 auto 24px; padding:16px 18px; border:1px solid #dce2d3; border-radius:10px; background:#f0f3e9; font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.run-activity summary { cursor:pointer; color:#42664b; font-weight:600; }
+.run-activity small { font-size:10px; font-weight:400; color:#78866f; }
+.run-activity ol { padding-left:20px; max-height:160px; overflow:auto; }
+.run-activity li small { display:block; }
+.run-activity button,.failed-turn button { background:#fdfdf9; color:#42664b; border:1px solid #cbd6bf; border-radius:5px; padding:6px 10px; margin:4px 6px 4px 0; font-size:11px; }
+.approval-card { background:#fdfdf9; border:1px solid #d0d9c4; padding:14px; border-radius:8px; margin:14px 0; }
+.approval-card h3 { font-size:13px; margin:0; }
+.approval-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; background:#eff1e8; padding:10px; font-size:11px; }
+.mutation-receipt { border-top:1px solid #dce2d3; margin-top:12px; padding-top:8px; }
+.failed-turn>p { margin-left:36px; color:#915b3a; font-size:11px; }
+.obsidian-status { background:transparent; border:0; color:#667b5d; font-size:10px; padding:10px 0; text-align:left; }
+.directory-error { font-size:11px; color:#915b3a; padding:8px 0; }
+.directory-error button { display:block; margin-top:6px; }

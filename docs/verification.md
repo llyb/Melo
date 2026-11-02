@@ -34,3 +34,14 @@
 - npm run test:desktop通过：真实Electron preload/IPC和离线Deep Agents，两轮上下文、新会话、窗口刷新历史读取、后端停止/恢复与输入保留重试、已保存会话读取/删除。采用独立端口和临时数据目录，不影响8000开发服务。截图可能不可用，不跳过功能断言。
 - 独立只读审阅发现3项缺陷，均已修复并添加回归测试。未验证本次真实付费模型调用、签名/安装包、云端部署；已补充fresh Electron和fresh backend进程的独立恢复阶段，通过真实preload/IPC读取持久会话。
 - 数据目录与明文/草稿/失败checkpoint边界见README；跨会话记忆和实体文件后端本轮不启用。
+## 2026-11-02 Obsidian 原生 MCP 与后台会话
+
+- 实现：最多5会话并发、每会话一轮未决、发送立即清输入、保留独立草稿、导航/左栏原位改名与 √ 保存；真实活动、审批和未知写核对通过具名IPC投影。
+- 依赖：保持 Deep Agents 0.7.32 / LangChain 1.4.7 / LangGraph 1.2.18，新增锁定 langchain[mcp] extra；使用 MCPAdapter、FastMCP 4.1.5 / MCP 2.3.0 原生 Streamable HTTP，没有自制MCP协议。
+- 后端：Ruff、完整 pytest 84项通过。覆盖5并发与legacy共享容量、输入outbox/首checkpoint前恢复、原子标题/发布、原生多动作审批/拒绝/重启/过期、写应答丢失去重、回执落盘失败未知优先、核对与结束竞态及事务回滚、旧revision恢复、终态无效回答重试；新执行路径用真实LangSmith SDK离线传输验证不上传正文/密钥。
+- 前端：ESLint、TypeScript、Vitest 13项通过；electron-vite build通过；实际 Electron preload/IPC 两轮上下文、提交立即清空/输入和新建保持可用、断开后端/重启/同turn重试、刷新和全新前后端进程恢复均通过。真实桌面检查发现并修复响应式Proxy不可跨IPC克隆的问题。
+- 本机 MCP：使用用户授权配置完成认证、list_tools和条件写schema核验；仅新建并读取一篇专用 `Melo Integration Tests/mcp-*.md` 笔记。随后通过实际原生MCP + Deep Agents（确定性模型）读取该笔记、生成更新提案、暂停审批、拒绝后完成，确认版本/内容均不变。没有读取无关笔记，没有实际批准修改已有笔记。
+- 本机凭据只存Git忽略的backend/.env，插件CA只存忽略的.local目录；TLS验证启用，未更改系统信任。catalog v2保留v1数据；回退/明文及外部笔记不可回滚边界见README。
+- 独立只读复核提出的持久化原子性、迟到响应、未知写优先和终态重试问题已修复；最终复核无阻断项。未推送、合并或重启用户8000开发服务。
+
+未检查：本轮付费模型、真实已有笔记批准写入、Python 3.12、新机器/安装包/远程CI；Electron capturePage在本桌面不可用，视觉截图未验收（功能DOM与实际IPC已检查）。原生MCPAdapter目前为beta，升级依赖前应复测本机插件协议。

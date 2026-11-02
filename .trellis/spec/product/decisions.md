@@ -1,3 +1,5 @@
+> 2026-11-02 用户已授权接入本机 Obsidian 原生 MCP 和后台运行，最多 5 会话并发、同会话一轮未决。以下初始“无MCP/单窗口单会话/等待锁导航”由本次决策覆盖。复用 langchain[mcp]==1.4.7 的 MCPAdapter、Deep Agents HITL、LangGraph checkpoint/events；只向模型开放列目录、读、限量搜索、create-only 新建和版本匹配更新。更新已有笔记必须先确认；原生多动作审批收齐后按序恢复。活动显示实际模型/工具/心跳，不返回隐藏推理。虚拟文件仍属 StateBackend，会话间共享记忆后续再做。
+
 > 2026-11-02后续决策覆盖下文初始约定：用户已批准多会话/会话内文件持久化，使用StateBackend+AsyncSqliteSaver和内置六个文件工具；目录/请求引用位于app/sessions.py，路由编排位于app/session_api.py。跨会话记忆后续再做。初始无checkpoint/无工具规则不再用于新会话接口，细则见存储、API和状态规范。
 
 # 产品与技术决策（2026-10-30）

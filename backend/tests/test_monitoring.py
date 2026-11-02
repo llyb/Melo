@@ -56,6 +56,41 @@ def capture_client(session, batched=False):
     return patch("app.agent.Client", side_effect=factory)
 
 
+async def test_background_native_approval_hides_vault_body_and_mcp_key(tmp_path):
+    from uuid import uuid4
+
+    from app.main import create_app
+    from tests.test_background_api import terminal
+    from tests.test_obsidian_approval import FakeObsidian, UpdateModel
+
+    settings = configured_settings(data_dir=tmp_path, obsidian_enabled=True,
+                                   obsidian_api_key='mcp-private-key')
+    obsidian = FakeObsidian(settings)
+    obsidian.body = 'vault-private-body'
+    recording = RecordingSession()
+    with capture_client(recording):
+        runner = AgentRunner(settings, model=UpdateModel(), obsidian=obsidian)
+        app = create_app(settings, runner, obsidian)
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url='http://test',
+                headers={'Authorization': 'Bearer local-secret'}) as client:
+            sid = app.state.catalog.create()['id']
+            rid = str(uuid4())
+            await client.post(f'/api/v1/sessions/{sid}/turns', json={
+                'turn_id': rid, 'expected_revision': 0, 'content': 'private-request'})
+            paused = await terminal(client, rid)
+            assert paused['status'] == 'awaiting_approval'
+            assert 'vault-private-body' in paused['approvals'][0]['diff']
+            aid = paused['approvals'][0]['id']
+            await client.post(f'/api/v1/runs/{rid}/approvals/{aid}', json={'decision': 'approve'})
+            assert (await terminal(client, rid))['status'] == 'completed'
+    text = json.dumps(recording.payloads)
+    assert recording.payloads
+    for private in ('vault-private-body', 'mcp-private-key', 'private-request', 'local-secret'):
+        assert private not in text
+    assert all(not p.get('inputs') and not p.get('outputs') for p in recording.payloads)
+
+
 def test_settings_defaults_and_validation(monkeypatch):
     assert not Settings(local_token="t").langsmith_enabled
     with pytest.raises(ValueError, match="LANGSMITH_API_KEY"):
@@ -161,12 +196,15 @@ async def test_http_request_id_matches_trace_and_shutdown_closes_client(tmp_path
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                              base_url="http://test") as client:
                     headers = {"Authorization": "Bearer local-secret"}
+                    client.headers.update(headers)
                     sid = (await client.post("/api/v1/sessions", headers=headers, json={})).json()["id"]
                     response = await client.post(f"/api/v1/sessions/{sid}/turns", headers=headers,
                         json={"turn_id": str(uuid4()), "expected_revision": 0,
                               "content": "private-body"})
-                    assert response.status_code == 200
-                    request_id = response.json()["request_id"]
+                    assert response.status_code == 202
+                    from tests.test_background_api import terminal
+                    assert (await terminal(client, response.json()['run_id']))['status'] == 'completed'
+                    request_id = response.headers['x-request-id']
                     assert response.headers["x-request-id"] == request_id
                 raise RuntimeError("shutdown")
     assert session.closed

@@ -21,16 +21,11 @@ function createWindow(): void {
   })
   window.webContents.on('will-navigate', (event, url) => { if (url !== allowed) event.preventDefault() })
   window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
-  let busy = false
   for (const action of actions) {
     ipcMain.removeHandler(`melo:${action}`)
     ipcMain.handle(`melo:${action}`, async (event, messages: unknown) => {
       if (!isTrustedSender(event.sender.id, window.webContents.id, event.senderFrame === window.webContents.mainFrame, event.senderFrame?.url || 'about:blank', allowed)) return failure('UNAUTHORIZED', '请求来源无效。')
-      const writes = !['health', 'listSessions', 'getSession'].includes(action)
-      if (writes && busy) return failure('RATE_LIMITED', '请等待当前回复。', true)
-      if (writes) busy = true
-      try { return await backendRequest(action, messages, process.env.MELO_LOCAL_TOKEN || '') }
-      finally { if (writes) busy = false }
+      return await backendRequest(action, messages, process.env.MELO_LOCAL_TOKEN || '')
     })
   }
   void window.loadURL(allowed)
