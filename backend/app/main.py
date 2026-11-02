@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import logging
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -9,12 +10,15 @@ from uuid import uuid4
 import openai
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphRecursionError
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
 from app.agent import AgentRunner, InvalidOutputError
 from app.schemas import ChatRequest
+from app.session_api import register_sessions
+from app.sessions import SessionCatalog
 from app.settings import Settings
 
 logger = logging.getLogger("melo")
@@ -30,16 +34,53 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app):
-        try:
-            yield
-        finally:
+        app.state.catalog = await asyncio.to_thread(
+            SessionCatalog, settings.data_dir / "catalog.sqlite3")
+        async with AsyncSqliteSaver.from_conn_string(
+                str(settings.data_dir / "checkpoints.sqlite3")) as saver:
+            await saver.setup()
+            app.state.saver = saver
             if isinstance(app.state.runner, AgentRunner):
-                await asyncio.to_thread(app.state.runner.close)
+                app.state.runner.graph.checkpointer = saver
+            try:
+                await app.state.recover_sessions()
+                yield
+            finally:
+                if isinstance(app.state.runner, AgentRunner):
+                    await asyncio.to_thread(app.state.runner.close)
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.chat_timeout = 60
     app.state.busy = False
     app.state.runner = runner
+    app.state.runner_injected = runner is not None
+    register_sessions(app, settings, ChatError)
+
+    @app.exception_handler(sqlite3.Error)
+    async def storage_error(request, error):
+        return error_response(request, ChatError(503, "STORAGE_UNAVAILABLE",
+                                                "本地存储暂不可用，请重试。", True))
+
+    @app.exception_handler(openai.APIError)
+    async def provider_error(request, error):
+        if isinstance(error, (openai.AuthenticationError, openai.PermissionDeniedError)):
+            mapped = ChatError(502, "MODEL_AUTH_ERROR", "模型认证失败，请检查后端配置。")
+        elif isinstance(error, openai.RateLimitError):
+            mapped = ChatError(429, "RATE_LIMITED", "模型服务限流，请稍后重试。", True)
+        elif isinstance(error, openai.APITimeoutError):
+            mapped = ChatError(504, "MODEL_TIMEOUT", "模型响应超时，请重试。", True)
+        else:
+            mapped = ChatError(502, "UPSTREAM_ERROR", "模型服务暂时不可用，请重试。", True)
+        return error_response(request, mapped)
+
+    @app.exception_handler(TimeoutError)
+    @app.exception_handler(GraphRecursionError)
+    async def timeout_error(request, error):
+        return error_response(request, ChatError(504, "MODEL_TIMEOUT", "模型响应超时，请重试。", True))
+
+    @app.exception_handler(InvalidOutputError)
+    async def output_error(request, error):
+        return error_response(request, ChatError(502, "UPSTREAM_ERROR", "模型输出无效，请重试。", True))
 
     def error_response(request: Request, error: ChatError):
         request.state.error_code = error.code
@@ -101,12 +142,12 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     async def chat(payload: ChatRequest, request: Request):
         if app.state.busy:
             raise ChatError(429, "RATE_LIMITED", "服务繁忙，请稍后重试。", True)
-        if app.state.runner is None and not settings.model_configured:
+        if not app.state.runner_injected and not settings.model_configured:
             raise ChatError(503, "MODEL_NOT_CONFIGURED", "请在后端配置模型 API Key。")
         app.state.busy = True
         try:
             if app.state.runner is None:
-                app.state.runner = AgentRunner(settings)
+                app.state.runner = AgentRunner(settings, checkpointer=getattr(app.state, "saver", None))
             async with asyncio.timeout(app.state.chat_timeout):
                 text = await app.state.runner.reply(payload.messages, request_id=request.state.request_id)
             if not isinstance(text, str) or not text.strip() or len(text) > 16000:

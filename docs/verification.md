@@ -25,3 +25,12 @@
 - 47 项后端测试及 Ruff 通过，包含自定义 HTTP(S) 地址、无效 URL 脱敏拒绝、实际 ChatOpenAI 请求参数和最终回答提取。
 - 使用本机临时 HTTP 模拟服务执行实际 tests.live_smoke，验证自定义地址、Key、模型名及两轮 Deep Agents 调用，未访问付费模型。这不能替代新服务的真实联调。
 - 排错时原 Z.AI 服务先返回 400/1210（不支持关闭思考）；修正参数后返回 429/1113（余额不足或没有资源包）。当前凭据仍不能完成真实聊天。未替换用户本机配置、重启既有服务、提交或推送；修改 env/代码后需重启后端。
+
+## 2026-11-02 多会话及会话内虚拟文件
+
+- 官方langgraph-checkpoint-sqlite 3.1.3、aiosqlite 0.22.1；现有Deep Agents 0.7.32 / LangGraph 1.2.18保持。
+- 后端ruff通过，pytest完整62项回归通过；覆盖真实文件工具、连接重开隔离、失败分支、摘要后的历史引用、catalog发布失败恢复、文本块输出、严格DTO、并发/超时、监控关联和删除。
+- 前端lint/typecheck通过，Vitest 8项通过，electron-vite build通过。
+- npm run test:desktop通过：真实Electron preload/IPC和离线Deep Agents，两轮上下文、新会话、窗口刷新历史读取、后端停止/恢复与输入保留重试、已保存会话读取/删除。采用独立端口和临时数据目录，不影响8000开发服务。截图可能不可用，不跳过功能断言。
+- 独立只读审阅发现3项缺陷，均已修复并添加回归测试。未验证本次真实付费模型调用、签名/安装包、云端部署；已补充fresh Electron和fresh backend进程的独立恢复阶段，通过真实preload/IPC读取持久会话。
+- 数据目录与明文/草稿/失败checkpoint边界见README；跨会话记忆和实体文件后端本轮不启用。

@@ -1,7 +1,7 @@
 # Melo
 
 Vue 3 + Electron 桌面对话工作台，Python FastAPI + Deep Agents 提供中文多轮对话。
-开发版支持通过环境变量配置 OpenAI Chat Completions 兼容模型服务；纯文本、非流式，历史仅保留在当前窗口内存。关闭、刷新或新建会话后清空。
+开发版支持环境变量配置 OpenAI Chat Completions 兼容模型服务，纯文本、非流式；支持会话新建、切换、重命名、删除与重启恢复。消息和会话内虚拟文件由 Deep Agents / LangGraph 官方 SQLite checkpointer 持久化，不启用跨会话共享记忆。
 
 ## 启动
 
@@ -69,7 +69,7 @@ npm run test:desktop
 
 LangSmith 指标监控已接入后端，默认关闭，只记录调用链、耗时、错误状态和 token 用量，隐藏对话正文。首次开通与本机配置见 [LangSmith 接入说明](docs/langsmith.md)。
 
-- desktop/src/main：窗口、安全 IPC 和本地 HTTP；preload：仅暴露 health/chat。
+- desktop/src/main：窗口、安全 IPC 和本地 HTTP；preload：仅暴露具名 health/会话管理接口。
 - desktop/src/renderer：Vue 对话页；backend/app：验证、统一错误和 Deep Agents 运行。
 - [产品决策](.trellis/spec/product/decisions.md)、[API 合同](.trellis/spec/guides/api-contract.md)、[测试](.trellis/spec/guides/testing.md)。
 - [验证记录](docs/verification.md)。任务档案与个人会话日志只保留在本机。
@@ -85,4 +85,12 @@ python .trellis/scripts/init_developer.py your-name
 全局 hooks 和自动上下文注入未验证，手动读取规范即可开发。执行 `python .trellis/scripts/task.py list` 查看任务。
 
 仓库：[llyb/Melo](https://github.com/llyb/Melo)，默认使用 main 分支。本轮没有配置或运行远程 CI。
-本次不提供安装包、签名、云端部署、自动更新、历史持久化、模型切换或知识库。
+本次不提供安装包、签名、云端部署、自动更新、模型切换或知识库。
+
+## 会话和数据
+
+数据保存在当前Windows用户的 `%LOCALAPPDATA%\Melo\data`，包含catalog.sqlite3（目录及请求引用）和checkpoints.sqlite3（框架状态）。当前使用langgraph-checkpoint-sqlite 3.1.3；每会话独立thread_id，StateBackend文件工具不访问真实主机目录。只有完成轮次成为当前可见状态，失败分支可能仍在checkpoint中；删除会话会清理完整thread。
+
+已提交消息和文件跨刷新、桌面/后端重启恢复；未发送草稿仅当前窗口保留。先停止后端再备份整个data目录（含存在的WAL/journal辅助文件）。本机数据未加密，不提供安全擦除、文件浏览器、云同步或跨会话记忆。模型窗口profile缺失时，使用原生摘要的12000 token触发/保留最近6条消息默认；更小窗口可能需要调整，错误不会推进成功会话状态。
+
+桌面发送仅提交新增输入；旧POST /api/v1/chat保留为无状态兼容接口，不读写持久会话，旧39条/64000字符限制仅适用于该接口。手动重试已提交turn返回原回答；模型完成但未写checkpoint时重试仍可能再次计费。默认测试使用临时数据目录与空闲端口，不停止8000上的开发后端。

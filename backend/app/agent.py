@@ -1,4 +1,5 @@
 import logging
+from copy import copy
 from uuid import UUID, uuid4
 
 from deepagents import (
@@ -9,9 +10,11 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.backends import StateBackend
+from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from langgraph.graph import END
 from langsmith import Client, agent_address, traceable, tracing_context
 from langsmith.utils import LangSmithError
 from urllib3.util import Retry
@@ -40,7 +43,7 @@ def metrics_only(data: dict) -> dict:
 
 
 class AgentRunner:
-    def __init__(self, settings: Settings, model: BaseChatModel | None = None):
+    def __init__(self, settings: Settings, model: BaseChatModel | None = None, checkpointer=None):
         self._trace_address = agent_address(settings.langsmith_agent_id,
             settings.langsmith_agent_environment
         ) if settings.langsmith_enabled and settings.langsmith_agent_id else None
@@ -59,21 +62,26 @@ class AgentRunner:
         # GLM-5.3 requires thinking; other compatible models receive no GLM-specific fields.
         model_options = {"reasoning_effort": "low", "extra_body": {"thinking": {"type": "enabled"}}}
         model = model or ChatOpenAI(
-            model=settings.model_name, api_key=settings.model_api_key,
+            model=settings.model_name, api_key=settings.model_api_key or "state-read-only",
             base_url=settings.model_base_url, use_responses_api=False,
             max_tokens=2048, timeout=55, max_retries=0,
             **(model_options if settings.model_name.lower().startswith("glm-5.3") else {}),
         )
-        # Plain chat must not inherit Deep Agents' automatic subagent and filesystem tools.
+        # Virtual files stay in thread state; no host IO or subagents are exposed.
         register_harness_profile("openai", HarnessProfile(
-            excluded_tools=frozenset({"read_file"}),
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)))
         backend = StateBackend()
+        middleware = [FilesystemMiddleware(backend=backend,
+            tools=["ls", "read_file", "write_file", "edit_file", "glob", "grep"])]
+        if not (model.profile or {}).get("max_input_tokens"):
+            middleware.append(SummarizationMiddleware(model=model, backend=backend,
+                trigger=("tokens", 12000), keep=("messages", 6)))
         self.graph = create_deep_agent(
             model=model,
             system_prompt="你是 Melo，一个简洁、可靠的中文助手。根据当前对话回答用户。",
             backend=backend,
-            middleware=[FilesystemMiddleware(backend=backend, tools=["read_file"])],
+            checkpointer=checkpointer,
+            middleware=middleware,
         )
 
     async def reply(self, messages: list[Message], *, request_id: str | None = None) -> str:
@@ -89,7 +97,9 @@ class AgentRunner:
 
     @traceable(name="Melo chat", process_inputs=lambda _: {}, process_outputs=lambda _: {})
     async def _reply(self, messages: list[Message]) -> str:
-        result = await self.graph.ainvoke(
+        graph = copy(self.graph)
+        graph.checkpointer = None
+        result = await graph.ainvoke(
             {"messages": [m.model_dump() for m in messages]},
             config={"recursion_limit": 10, "callbacks": [], "run_name": "Deep Agents"},
         )
@@ -109,3 +119,54 @@ class AgentRunner:
     def close(self):
         if self._trace_client is not None:
             self._trace_client.close(timeout=2)
+
+    async def initialize_thread(self, session_id):
+        config = await self.graph.aupdate_state(
+            {"configurable": {"thread_id": session_id}}, None, as_node=END)
+        return config["configurable"]["checkpoint_id"]
+
+    async def run_turn(self, session_id, turn_id, attempt_no, base_checkpoint_id,
+                       content, request_id):
+        config = {"configurable": {"thread_id": session_id,
+                                    "checkpoint_id": base_checkpoint_id},
+                  "metadata": {"melo_turn_id": turn_id, "melo_attempt_no": attempt_no},
+                  "recursion_limit": 10, "callbacks": []}
+        with tracing_context(enabled=self._trace_client is not None, client=self._trace_client,
+                             project_name=self._trace_project, address=self._trace_address,
+                             metadata={"request_id": request_id}, parent=False, replicas=[]):
+            @traceable(name="Melo chat", process_inputs=lambda _: {}, process_outputs=lambda _: {})
+            async def invoke():
+                await self.graph.ainvoke(
+                    {"messages": [HumanMessage(id=turn_id, content=content)]},
+                    config=config, durability="sync")
+            await invoke(langsmith_extra={"client": self._trace_client,
+                "run_id": UUID(request_id), "metadata": {"request_id": request_id}})
+        return await self.find_result(session_id, turn_id, attempt_no)
+
+    async def find_result(self, session_id, turn_id, attempt_no):
+        result = None
+        async for state in self.graph.aget_state_history(
+                {"configurable": {"thread_id": session_id}}):
+            meta = state.metadata or {}
+            if meta.get("melo_turn_id") != turn_id or meta.get("melo_attempt_no") != attempt_no:
+                continue
+            messages = state.values.get("messages", [])
+            user = next((m for m in messages if isinstance(m, HumanMessage)
+                         and m.id == turn_id), None)
+            if result is None and not state.next and messages:
+                final = messages[-1]
+                if isinstance(final, AIMessage) and not final.tool_calls:
+                    text = final.content
+                    if isinstance(text, list) and all(isinstance(b, dict)
+                            and b.get("type") == "text" and isinstance(b.get("text"), str)
+                            for b in text):
+                        text = "".join(b["text"] for b in text)
+                    if isinstance(text, str) and text.strip() and len(text) <= 16000:
+                        result = {"result_checkpoint_id": state.config["configurable"]["checkpoint_id"],
+                                  "assistant_message_id": final.id, "text": text}
+            if result is not None and user is not None:
+                result.update(input_checkpoint_id=state.config["configurable"]["checkpoint_id"],
+                              user_message_id=user.id)
+        if result is None:
+            raise InvalidOutputError
+        return result

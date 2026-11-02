@@ -39,7 +39,8 @@ async def test_real_deep_agent_no_tools_and_no_cross_request_state():
               Message(role="user", content="我是谁")]
     assert await runner.reply(second) == "小明"
     assert await runner.reply([Message(role="user", content="全新会话")]) == "全新会话"
-    assert not model.offered_tools
+    assert {t.name for t in model.offered_tools} == {
+        "ls", "read_file", "write_file", "edit_file", "glob", "grep"}
     assert runner.graph.checkpointer is None
     assert len(model.seen[1]) == 4  # one system and three client messages
 

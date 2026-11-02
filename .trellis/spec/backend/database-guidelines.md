@@ -1,6 +1,9 @@
 # 存储边界
 
-初始任务不用数据库、ORM、LangGraph checkpointer 或持久 store。
-前端每次发送完整成功历史 + 本次输入；后端独立处理，不叠加其他历史，不跨请求保留模型消息。
-StateBackend 仅限本轮内存虚拟文件；重启不恢复。禁止把用户内容写入源码目录、Obsidian 或本地磁盘。
-未来若需要重启续聊，另建持久化任务，确认数据目录、删除/导出、schema 迁移和隐私要求后再选择 SQLite。
+2026-11-02用户批准多会话及会话内虚拟文件持久化，覆盖初始仅内存约定。使用官方AsyncSqliteSaver + StateBackend，每会话独立thread_id；应用catalog只保存目录、请求状态和checkpoint引用，不另存聊天或文件正文。
+
+路径为当前用户LOCALAPPDATA/Melo/data；测试必须注入临时data_dir并运行lifespan。saver内部表不直接读写；目录短事务在线程执行，模型等待不持事务。成功head发布和请求记录同一目录事务；崩溃后先检查原生checkpoint终态，不擅自重跑付费模型。
+
+失败分支可落盘但不成为成功head；从base重试不继承失败文件。删除先tombstone，再adelete_thread，最后清理目录；启动继续未完成删除。不删全库实现单会话删除或代码回滚。未知catalog版本拒绝启动，saver schema由官方setup维护。
+
+数据未加密，备份先停止后端并复制整个目录。跨会话记忆、实体文件导出暂未实现；StoreBackend/FilesystemBackend为可选技术，不是用户禁止项。

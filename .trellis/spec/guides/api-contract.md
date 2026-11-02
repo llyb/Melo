@@ -1,3 +1,22 @@
+# 持久会话API（2026-11-02）
+
+沿用本地Bearer token、loopback、请求体1MiB、统一错误envelope和安全IPC；renderer不能指定URL/路径/原始graph配置。
+
+- GET /api/v1/sessions?limit=50&offset=0：items/has_more，limit1–100。
+- POST /api/v1/sessions：严格{}，返回SessionSummary（201）。
+- GET /api/v1/sessions/{UUID}?limit=20&before_seq=N：session/messages/has_more/next_before_seq/pending_turn；limit1–50轮，before_seq排他正整数，页内顺序正向。
+- PATCH /api/v1/sessions/{UUID}：{title}，trim后1–80 code points。
+- DELETE /api/v1/sessions/{UUID}：删除thread及目录，返回{deleted_id}。
+- POST /api/v1/sessions/{UUID}/turns：{turn_id:UUID,expected_revision:非负整数,content:非空字符串≤8000}，返回request_id/turn_id/session/messages（本轮一对，框架稳定ID）。
+
+SessionSummary仅id/title/created_at/updated_at/revision。messages仅id/role/content，工具轨迹不返回；最终回答≤16000。新增SESSION_NOT_FOUND404、SESSION_CONFLICT/TURN_CONFLICT409、STORAGE_UNAVAILABLE503；保留模型错误及429/504。每轮总60秒/递归10，main等65秒；CRUD等10秒。
+
+消息/files由checkpointer恢复，前端只发新增输入；不把旧39条/64000限制套在含工具的图状态上。无模型Key也可读已保存状态，但生成必须有配置。已完成turn幂等读原结果；不承诺上游exactly-once。
+
+## 兼容的旧接口
+
+以下为旧POST /chat和health合同。/chat继续无状态、使用独立图配置，不与新目录混写；桌面不再使用旧chat IPC。旧数组上限仅属于兼容接口。
+
 # 最低 API 合同 v1
 
 依据：../product/decisions.md。以下为待实现合同，不是已运行端点。

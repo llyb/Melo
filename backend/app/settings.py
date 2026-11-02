@@ -20,6 +20,8 @@ class Settings:
     langsmith_workspace_id: str = ""
     langsmith_agent_id: str = ""
     langsmith_agent_environment: str = "development"
+    data_dir: Path = field(default_factory=lambda: Path(os.getenv(
+        "LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "Melo" / "data")
 
     def __post_init__(self):
         try:

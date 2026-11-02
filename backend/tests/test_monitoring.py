@@ -145,11 +145,14 @@ async def test_monitoring_upload_failure_does_not_break_chat():
             runner.close()
 
 
-async def test_http_request_id_matches_trace_and_shutdown_closes_client():
+async def test_http_request_id_matches_trace_and_shutdown_closes_client(tmp_path):
+    from dataclasses import replace
+    from uuid import uuid4
+
     from app.main import create_app
 
     session = RecordingSession()
-    settings = configured_settings()
+    settings = replace(configured_settings(), data_dir=tmp_path)
     with capture_client(session):
         runner = AgentRunner(settings, model=LocalModel())
         app = create_app(settings, runner)
@@ -157,9 +160,11 @@ async def test_http_request_id_matches_trace_and_shutdown_closes_client():
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                              base_url="http://test") as client:
-                    response = await client.post("/api/v1/chat", headers={
-                        "Authorization": "Bearer local-secret"}, json={
-                        "messages": [{"role": "user", "content": "private-body"}]})
+                    headers = {"Authorization": "Bearer local-secret"}
+                    sid = (await client.post("/api/v1/sessions", headers=headers, json={})).json()["id"]
+                    response = await client.post(f"/api/v1/sessions/{sid}/turns", headers=headers,
+                        json={"turn_id": str(uuid4()), "expected_revision": 0,
+                              "content": "private-body"})
                     assert response.status_code == 200
                     request_id = response.json()["request_id"]
                     assert response.headers["x-request-id"] == request_id
