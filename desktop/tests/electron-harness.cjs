@@ -5,6 +5,9 @@ const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 app.disableHardwareAcceleration()
 let restartedBackend
+const nativeFetch = globalThis.fetch
+// Test transport only: production URLs remain fixed.
+globalThis.fetch = (url, options) => nativeFetch(String(url).replace('http://127.0.0.1:8000/', 'http://127.0.0.1:' + process.env.SMOKE_PORT + '/'), options)
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 ;(async () => {
@@ -23,17 +26,21 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
       if (await execute('!!document.querySelector("textarea") && !!window.melo')) break
       await delay(100)
     }
-    assert.equal(await execute('typeof window.melo.chat'), 'function')
+    assert.equal(await execute('typeof window.melo.sendTurn'), 'function')
     assert.equal(await execute('typeof window.require'), 'undefined')
     const health = await execute('window.melo.health()')
     assert.equal(health.ok, true)
     const submit = async text => {
+      const count = await execute('document.querySelectorAll(".assistant").length')
       await execute(`(() => { const el = document.querySelector('textarea'); el.value = ${JSON.stringify(text)}; el.dispatchEvent(new Event('input', {bubbles:true})); })()`)
       await delay(100)
-      await execute('document.querySelector("form").requestSubmit()')
+      await execute('document.querySelector("form.composer").requestSubmit()')
+      assert.equal(await execute('document.querySelector("textarea").value'), '')
+      assert.equal(await execute('document.querySelector("textarea").disabled'), false)
+      assert.equal(await execute('document.querySelector(".new-chat").disabled'), false)
       for (let i = 0; i < 100; i++) {
         await delay(100)
-        if (await execute('!document.querySelector("textarea").disabled')) return
+        if (await execute('document.querySelectorAll(".assistant").length > ' + count + ' || !!document.querySelector("[role=alert]")')) return
       }
       throw new Error('UI response timed out')
     }
@@ -49,16 +56,23 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
     try { writeFileSync(join(path, 'chat.png'), (await window.webContents.capturePage()).toPNG()) }
     catch { console.log('NOTE: screenshot capture unavailable in this desktop session.') }
     await execute('document.querySelector(".new-chat").click()')
-    await delay(100)
+    await delay(500)
     assert.equal(await execute('document.querySelectorAll(".message").length'), 0)
+    const beforeReload = await execute('window.melo.listSessions({limit:50,offset:0})')
+    assert(beforeReload.data.items.length >= 2)
+    const savedId = beforeReload.data.items.find(s => s.revision === 2).id
+    await window.webContents.reload()
+    await delay(1000)
+    const restored = await execute('window.melo.getSession(' + JSON.stringify(savedId) + ')')
+    assert.equal(restored.data.messages.length, 4)
     process.kill(Number(process.env.SMOKE_BACKEND_PID))
     await delay(300)
     assert.equal((await execute('window.melo.health()')).ok, false)
     await submit('恢复测试')
-    assert.equal(await execute('document.querySelectorAll(".message").length'), 0)
-    assert.equal(await execute('document.querySelector("textarea").value'), '恢复测试')
+    assert.equal(await execute('document.querySelectorAll(".message").length'), 1)
+    assert.equal(await execute('document.querySelector("textarea").value'), '')
     assert.equal(await execute('!!document.querySelector("[role=alert]")'), true)
-    restartedBackend = spawn(join(__dirname, '../../backend/.venv/Scripts/python.exe'), ['-m', 'uvicorn', 'tests.smoke_server:app', '--host', '127.0.0.1', '--port', '8000', '--no-access-log'], { cwd: join(__dirname, '../../backend'), env: process.env, windowsHide: true, stdio: 'ignore' })
+    restartedBackend = spawn(join(__dirname, '../../backend/.venv/Scripts/python.exe'), ['-m', 'uvicorn', 'tests.smoke_server:app', '--host', '127.0.0.1', '--port', process.env.SMOKE_PORT, '--no-access-log'], { cwd: join(__dirname, '../../backend'), env: process.env, windowsHide: true, stdio: 'ignore' })
     let ready = false
     for (let i = 0; i < 100; i++) {
       await delay(100)
@@ -70,12 +84,18 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
       await delay(100)
       if (await execute('document.querySelectorAll(".message").length === 2')) break
     }
-    assert.equal(await execute('document.querySelectorAll(".message").length'), 2)
+    assert.equal(await execute('document.querySelectorAll(".message").length'), 2,
+      await execute('document.querySelector(".run-activity")?.textContent + " / " + document.querySelector(".error")?.textContent'))
     assert.equal(await execute('document.querySelector("textarea").value'), '')
     await execute('document.querySelector(".new-chat").click()')
-    await delay(100)
+    await delay(500)
     try { writeFileSync(join(path, 'welcome.png'), (await window.webContents.capturePage()).toPNG()) }
     catch { /* Functional DOM checks above remain mandatory. */ }
+    const restoredAfterBackend = await execute('window.melo.getSession(' + JSON.stringify(savedId) + ')')
+    assert.equal(restoredAfterBackend.data.messages.length, 4)
+    const deleted = await execute('window.melo.deleteSession(' + JSON.stringify(savedId) + ')')
+    assert.equal(deleted.ok, true)
+    assert.equal((await execute('window.melo.getSession(' + JSON.stringify(savedId) + ')')).ok, false)
     console.log('PASS: actual Electron preload/IPC, offline two-turn context, reset, backend disconnect, retained input and successful retry after restart.')
     restartedBackend.kill()
     app.exit(0)

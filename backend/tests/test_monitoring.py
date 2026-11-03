@@ -8,9 +8,8 @@ import requests
 from langsmith import Client
 
 from app.agent import AgentRunner
-from app.schemas import Message
 from app.settings import Settings
-from tests.test_agent import LocalModel
+from tests.test_agent import LocalModel, run_text
 
 
 class RecordingSession(requests.Session):
@@ -56,6 +55,41 @@ def capture_client(session, batched=False):
     return patch("app.agent.Client", side_effect=factory)
 
 
+async def test_background_native_approval_hides_vault_body_and_mcp_key(tmp_path):
+    from uuid import uuid4
+
+    from app.main import create_app
+    from tests.test_background_api import terminal
+    from tests.test_obsidian_approval import FakeObsidian, UpdateModel
+
+    settings = configured_settings(data_dir=tmp_path, obsidian_enabled=True,
+                                   obsidian_api_key='mcp-private-key')
+    obsidian = FakeObsidian(settings)
+    obsidian.body = 'vault-private-body'
+    recording = RecordingSession()
+    with capture_client(recording):
+        runner = AgentRunner(settings, model=UpdateModel(), obsidian=obsidian)
+        app = create_app(settings, runner, obsidian)
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url='http://test',
+                headers={'Authorization': 'Bearer local-secret'}) as client:
+            sid = app.state.catalog.create()['id']
+            rid = str(uuid4())
+            await client.post(f'/api/v1/sessions/{sid}/turns', json={
+                'turn_id': rid, 'expected_revision': 0, 'content': 'private-request'})
+            paused = await terminal(client, rid)
+            assert paused['status'] == 'awaiting_approval'
+            assert 'vault-private-body' in paused['approvals'][0]['diff']
+            aid = paused['approvals'][0]['id']
+            await client.post(f'/api/v1/runs/{rid}/approvals/{aid}', json={'decision': 'approve'})
+            assert (await terminal(client, rid))['status'] == 'completed'
+    text = json.dumps(recording.payloads)
+    assert recording.payloads
+    for private in ('vault-private-body', 'mcp-private-key', 'private-request', 'local-secret'):
+        assert private not in text
+    assert all(not p.get('inputs') and not p.get('outputs') for p in recording.payloads)
+
+
 def test_settings_defaults_and_validation(monkeypatch):
     assert not Settings(local_token="t").langsmith_enabled
     with pytest.raises(ValueError, match="LANGSMITH_API_KEY"):
@@ -95,7 +129,7 @@ async def test_metrics_only_real_sdk_transport_has_usage_and_request_id(agent_id
     with capture_client(session, batched=batched):
         runner = AgentRunner(configured_settings(langsmith_agent_id=agent_id), model=UsageModel())
         try:
-            assert await runner.reply([Message(role="user", content="private-body")],
+            assert await run_text(runner, ["private-body"],
                                       request_id=request_id) == "private-body"
         finally:
             runner.close()
@@ -127,7 +161,7 @@ async def test_error_trace_does_not_export_exception_body():
         runner = AgentRunner(configured_settings(), model=FailedModel())
         try:
             with pytest.raises(RuntimeError):
-                await runner.reply([Message(role="user", content="private-body")])
+                await run_text(runner, ["private-body"])
         finally:
             runner.close()
     text = json.dumps(session.payloads)
@@ -140,16 +174,19 @@ async def test_monitoring_upload_failure_does_not_break_chat():
     with capture_client(RecordingSession(fail=True)):
         runner = AgentRunner(configured_settings(), model=LocalModel())
         try:
-            assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+            assert await run_text(runner, ["hello"]) == "hello"
         finally:
             runner.close()
 
 
-async def test_http_request_id_matches_trace_and_shutdown_closes_client():
+async def test_http_request_id_matches_trace_and_shutdown_closes_client(tmp_path):
+    from dataclasses import replace
+    from uuid import uuid4
+
     from app.main import create_app
 
     session = RecordingSession()
-    settings = configured_settings()
+    settings = replace(configured_settings(), data_dir=tmp_path)
     with capture_client(session):
         runner = AgentRunner(settings, model=LocalModel())
         app = create_app(settings, runner)
@@ -157,11 +194,16 @@ async def test_http_request_id_matches_trace_and_shutdown_closes_client():
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                              base_url="http://test") as client:
-                    response = await client.post("/api/v1/chat", headers={
-                        "Authorization": "Bearer local-secret"}, json={
-                        "messages": [{"role": "user", "content": "private-body"}]})
-                    assert response.status_code == 200
-                    request_id = response.json()["request_id"]
+                    headers = {"Authorization": "Bearer local-secret"}
+                    client.headers.update(headers)
+                    sid = (await client.post("/api/v1/sessions", headers=headers, json={})).json()["id"]
+                    response = await client.post(f"/api/v1/sessions/{sid}/turns", headers=headers,
+                        json={"turn_id": str(uuid4()), "expected_revision": 0,
+                              "content": "private-body"})
+                    assert response.status_code == 202
+                    from tests.test_background_api import terminal
+                    assert (await terminal(client, response.json()['run_id']))['status'] == 'completed'
+                    request_id = response.headers['x-request-id']
                     assert response.headers["x-request-id"] == request_id
                 raise RuntimeError("shutdown")
     assert session.closed
@@ -171,21 +213,21 @@ async def test_http_request_id_matches_trace_and_shutdown_closes_client():
 async def test_disabled_monitoring_does_not_create_sdk_client():
     with patch("app.agent.Client") as client:
         runner = AgentRunner(Settings(local_token="t"), model=LocalModel())
-        assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+        assert await run_text(runner, ["hello"]) == "hello"
         runner.close()
         client.assert_not_called()
 
 
 async def test_disabled_monitoring_ignores_inactive_destination():
     runner = AgentRunner(Settings(local_token="t", langsmith_agent_id="INVALID ID"), model=LocalModel())
-    assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+    assert await run_text(runner, ["hello"]) == "hello"
 
 
 async def test_ambient_sdk_conflict_disables_only_monitoring(monkeypatch, caplog):
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
     monkeypatch.setenv("LANGSMITH_RUNS_ENDPOINTS", '{"https://other.test":"other-key"}')
     runner = AgentRunner(configured_settings(), model=LocalModel())
-    assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+    assert await run_text(runner, ["hello"]) == "hello"
     assert runner._trace_client is None
     assert "LangSmith monitoring disabled" in caplog.text
     assert "test-langsmith-secret" not in caplog.text
@@ -205,11 +247,11 @@ async def test_actual_openai_compatible_model_serialization_is_metrics_only():
     async with httpx.AsyncClient(transport=httpx.MockTransport(completion)) as model_http:
         model = ChatOpenAI(model="glm-5.3", api_key="model-secret",
                            base_url="https://api.z.ai/api/paas/v4", use_responses_api=False,
-                           http_async_client=model_http, max_retries=0)
+                           http_async_client=model_http, max_retries=0, disable_streaming=True)
         with capture_client(session):
             runner = AgentRunner(configured_settings(), model=model)
             try:
-                assert await runner.reply([Message(role="user", content="private-prompt")]) == "private-reply"
+                assert await run_text(runner, ["private-prompt"]) == "private-reply"
             finally:
                 runner.close()
     payload = json.dumps(session.payloads)

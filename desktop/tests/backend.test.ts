@@ -14,7 +14,7 @@ it('keeps token in main and rejects malformed responses', async () => {
   expect(network.mock.calls[0][0]).toBe('http://127.0.0.1:8000/api/v1/health')
   expect(network.mock.calls[0][1].headers.Authorization).toBe('Bearer local-secret')
   expect(JSON.stringify(result)).not.toContain('local-secret')
-  const malformed = await backendRequest('chat', [{ role: 'user', content: 'hi' }], 't',
+  const malformed = await backendRequest('getSession', { id: crypto.randomUUID() }, 't',
     vi.fn().mockResolvedValue(new Response('{}')))
   expect(malformed.ok).toBe(false)
 })

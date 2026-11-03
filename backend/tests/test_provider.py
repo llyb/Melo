@@ -6,8 +6,8 @@ import pytest
 from langchain_openai import ChatOpenAI
 
 from app.agent import AgentRunner
-from app.schemas import Message
 from app.settings import Settings
+from tests.test_agent import run_text
 
 
 @pytest.mark.parametrize("model_name", ["glm-5.3", "custom-chat"])
@@ -25,19 +25,27 @@ async def test_configured_provider_request_returns_only_answer(model_name):
         if model_name == "custom-chat":
             assert "thinking" not in payload
             assert "reasoning_effort" not in payload
-        return httpx.Response(200, json={
+        response = {
             "id": "offline", "object": "chat.completion", "created": 0, "model": "glm-5.3",
             "choices": [{"index": 0, "finish_reason": "stop", "message": {
                 "role": "assistant", "content": "OK", "reasoning_content": "private-reasoning"}}],
-            "usage": {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11}})
+            "usage": {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11}}
+        if payload.get("stream"):
+            response["choices"][0]["delta"] = response["choices"][0].pop("message")
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                text="data: " + json.dumps(response) + "\n\ndata: [DONE]\n\n")
+        return httpx.Response(200, json=response)
+
+    def configured_model(**kwargs):
+        assert kwargs["timeout"] is None
+        return ChatOpenAI(**kwargs, http_async_client=model_http)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(completion)) as model_http:
-        with patch("app.agent.ChatOpenAI", side_effect=lambda **kwargs:
-                   ChatOpenAI(**kwargs, http_async_client=model_http)):
+        with patch("app.agent.ChatOpenAI", side_effect=configured_model):
             runner = AgentRunner(Settings(local_token="t", model_api_key="offline-key",
                                           model_base_url="https://gateway.example/v1",
                                           model_name=model_name))
         try:
-            assert await runner.reply([Message(role="user", content="Hello")]) == "OK"
+            assert await run_text(runner, ["Hello"]) == "OK"
         finally:
             runner.close()

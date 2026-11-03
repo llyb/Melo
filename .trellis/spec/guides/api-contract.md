@@ -1,3 +1,29 @@
+> 2026-11-03用户修订：仅保留一个Agent图及会话/run入口，删除旧/chat、reply和旧DTO。暂不设置Agent全轮时限、模型请求超时或图步数上限（原生循环使用infinity禁用默认有限上限）。spent仅为指标，不参与恢复准入；5会话并发、同会话一轮未决、MCP网络超时和修改审批有效期保留。下文旧兼容/60或120秒/10或25步规则为历史，已被本条覆盖。测试覆盖单次构图、31模型调用/30工具循环、超高spent恢复与旧路由404。
+
+> 2026-11-02 后台 run 合同覆盖下文旧同步 turns 与全局 busy 约定。`POST /sessions/{id}/turns` 接受相同负载，先落盘再返回 202 `{run_id,turn_id,session_id,status}`。run_id=turn_id，稳定 ID 幂等。SessionSummary 增加 active_run；详情增加 failed_turns（最近20条，仅run_id/content），保留 pending_turn。
+> `GET /runs/{id}?after_seq=0` 返回身份、session、status、created_at/updated_at/spent、受控 error、最多200项 events/cursor/gap、messages/content、approvals/mutations。事件只含seq/kind/label/at/path及三种身份，不含正文或原始参数；环形保留200条。状态为 accepted/running/awaiting_approval/interrupted/needs_reconciliation/completed/failed/abandoned。
+> `POST /runs/{id}/approvals/{aid}` 接受 `{decision:approve|reject}`；`POST /runs/{id}/resume|reprepare-approval|end` 接受严格 `{}`；`GET /runs/{id}/reconciliation/{call}` 只返回id/path/observed_version/matches_target，POST 接受 `{decision:accept_current,observed_version}`。核对不宣称执行成功，不自动重写。`GET /obsidian/status` 与 `POST /obsidian/recheck {}` 仅返回 enabled/status/write_supported。
+> 同会话未决409、全局第6运行429；审批等待不占容量。CRUD/状态IPC 10秒，生成120秒活跃预算、递归25；关闭前端不取消后端。旧 /chat 维持60秒并与run共享5个名额，不挂Obsidian写工具。renderer仅可调用具名IPC，main固定路由并校验身份/状态/响应。
+
+# 持久会话API（2026-11-02）
+
+沿用本地Bearer token、loopback、请求体1MiB、统一错误envelope和安全IPC；renderer不能指定URL/路径/原始graph配置。
+
+- GET /api/v1/sessions?limit=50&offset=0：items/has_more，limit1–100。
+- POST /api/v1/sessions：严格{}，返回SessionSummary（201）。
+- GET /api/v1/sessions/{UUID}?limit=20&before_seq=N：session/messages/has_more/next_before_seq/pending_turn；limit1–50轮，before_seq排他正整数，页内顺序正向。
+- PATCH /api/v1/sessions/{UUID}：{title}，trim后1–80 code points。
+- DELETE /api/v1/sessions/{UUID}：删除thread及目录，返回{deleted_id}。
+- POST /api/v1/sessions/{UUID}/turns：{turn_id:UUID,expected_revision:非负整数,content:非空字符串≤8000}，返回request_id/turn_id/session/messages（本轮一对，框架稳定ID）。
+
+SessionSummary仅id/title/created_at/updated_at/revision。messages仅id/role/content，工具轨迹不返回；最终回答≤16000。新增SESSION_NOT_FOUND404、SESSION_CONFLICT/TURN_CONFLICT409、STORAGE_UNAVAILABLE503；保留模型错误及429/504。每轮总60秒/递归10，main等65秒；CRUD等10秒。
+
+消息/files由checkpointer恢复，前端只发新增输入；不把旧39条/64000限制套在含工具的图状态上。无模型Key也可读已保存状态，但生成必须有配置。已完成turn幂等读原结果；不承诺上游exactly-once。
+
+## 兼容的旧接口
+
+以下为旧POST /chat和health合同。/chat继续无状态、使用独立图配置，不与新目录混写；桌面不再使用旧chat IPC。旧数组上限仅属于兼容接口。
+
 # 最低 API 合同 v1
 
 依据：../product/decisions.md。以下为待实现合同，不是已运行端点。

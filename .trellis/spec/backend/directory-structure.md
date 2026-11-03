@@ -1,3 +1,5 @@
+> 2026-11-02后续决策覆盖下文初始约定：用户已批准多会话/会话内文件持久化，使用StateBackend+AsyncSqliteSaver和内置六个文件工具；目录/请求引用位于app/sessions.py，路由编排位于app/session_api.py。跨会话记忆后续再做。初始无checkpoint/无工具规则不再用于新会话接口，细则见存储、API和状态规范。
+
 # 目录与 Agent 边界
 
 建议 backend/pyproject.toml、uv.lock；app/main.py 配置 FastAPI/lifespan/异常处理，app/routes/chat.py 放 health/chat 路由，app/schemas.py 放 Pydantic DTO，app/agent.py 封装 Deep Agents，app/settings.py 读取环境变量，tests/ 放测试。
