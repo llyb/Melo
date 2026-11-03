@@ -84,7 +84,7 @@ async def test_strict_new_turn_boundary(tmp_path, patch):
         assert (await client.post(f'/api/v1/sessions/{sid}/turns', json=body)).status_code == 422
 
 
-async def test_text_blocks_remain_readable_and_legacy_first_keeps_saver(tmp_path, monkeypatch):
+async def test_text_blocks_remain_readable_with_shared_runner(tmp_path, monkeypatch):
     from langchain_core.messages import AIMessage
     from langchain_core.outputs import ChatGeneration, ChatResult
     class BlocksModel(LocalModel):
@@ -97,8 +97,6 @@ async def test_text_blocks_remain_readable_and_legacy_first_keeps_saver(tmp_path
     async with app.router.lifespan_context(app), AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test",
             headers={"Authorization": "Bearer t"}) as client:
-        assert (await client.post('/api/v1/chat', json={
-            "messages": [{"role": "user", "content": "legacy"}]})).status_code == 200
         sid = (await client.post('/api/v1/sessions', json={})).json()['id']
         body = {"turn_id": str(uuid4()), "expected_revision": 0, "content": "blocks"}
         sent = await client.post(f'/api/v1/sessions/{sid}/turns', json=body)
@@ -109,7 +107,7 @@ async def test_text_blocks_remain_readable_and_legacy_first_keeps_saver(tmp_path
         assert (await client.get(f'/api/v1/sessions/{sid}')).json()['messages'][1]['content'] == 'answer'
 
 
-async def test_native_turn_timeout_releases_gate_and_retry_does_not_append_twice(tmp_path, monkeypatch):
+async def test_provider_timeout_releases_gate_and_retry_does_not_append_twice(tmp_path, monkeypatch):
     settings = Settings(local_token="t", data_dir=tmp_path)
     runner = AgentRunner(settings, model=LocalModel())
     app = create_app(settings, runner)
@@ -118,6 +116,9 @@ async def test_native_turn_timeout_releases_gate_and_retry_does_not_append_twice
     async def delayed(*args):
         started.set()
         await release.wait()
+        if not getattr(delayed, "failed", False):
+            delayed.failed = True
+            raise TimeoutError
         return await original(*args)
     monkeypatch.setattr(runner, 'execute_run', delayed)
     async with app.router.lifespan_context(app), AsyncClient(
@@ -126,16 +127,15 @@ async def test_native_turn_timeout_releases_gate_and_retry_does_not_append_twice
         sid = (await client.post('/api/v1/sessions', json={})).json()['id']
         url = f'/api/v1/sessions/{sid}/turns'
         body = {"turn_id": str(uuid4()), "expected_revision": 0, "content": "hi"}
-        app.state.runs.time_limit = 0.05
         assert (await client.post(url, json=body)).status_code == 202
         await started.wait()
         assert (await client.post(url, json={**body, 'turn_id': str(uuid4())})).status_code == 409
         assert (await client.delete(f'/api/v1/sessions/{sid}')).status_code == 409
+        release.set()
         failed = await terminal(client, body['turn_id'])
         assert failed['status'] == 'failed'
         assert failed['error']['code'] == 'MODEL_TIMEOUT'
         release.set()
-        app.state.runs.time_limit = 120
         await asyncio.sleep(0.05)
         assert (await client.post(f"/api/v1/runs/{body['turn_id']}/resume", json={})).status_code == 200
         assert (await terminal(client, body['turn_id']))['status'] == 'completed'

@@ -1,3 +1,5 @@
+from tests.test_agent import run_turn
+
 """Explicit paid native-thread smoke; only temporary synthetic messages are persisted."""
 import asyncio
 import logging
@@ -23,9 +25,9 @@ async def main():
             sid, tag = str(uuid4()), uuid4().hex[:8]
             try:
                 base = await runner.initialize_thread(sid)
-                first = await asyncio.wait_for(runner.run_turn(
+                first = await asyncio.wait_for(run_turn(runner,
                     sid, str(uuid4()), 1, base, f"请记住校验码 {tag}，只回复已收到。", str(uuid4())), 60)
-                second = await asyncio.wait_for(runner.run_turn(
+                second = await asyncio.wait_for(run_turn(runner,
                     sid, str(uuid4()), 1, first["result_checkpoint_id"],
                     "上一条校验码是什么？只返回校验码。", str(uuid4())), 60)
                 assert tag in second["text"], "Native two-turn context verification failed"

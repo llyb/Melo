@@ -7,7 +7,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.agent import AgentRunner
 from app.settings import Settings
-from tests.test_agent import LocalModel
+from tests.test_agent import LocalModel, run_turn
 
 
 class FileModel(LocalModel):
@@ -35,21 +35,21 @@ async def test_real_file_tools_survive_restart_and_same_path_is_isolated(tmp_pat
     async with AsyncSqliteSaver.from_conn_string(path) as saver:
         runner = AgentRunner(Settings(local_token="t"), model=FileModel(), checkpointer=saver)
         base = await runner.initialize_thread(sid)
-        result = await runner.run_turn(sid, str(uuid4()), 1, base, "write:private-note", str(uuid4()))
+        result = await run_turn(runner, sid, str(uuid4()), 1, base, "write:private-note", str(uuid4()))
     async with AsyncSqliteSaver.from_conn_string(path) as saver:
         runner = AgentRunner(Settings(local_token="t"), model=FileModel(), checkpointer=saver)
-        read = await runner.run_turn(sid, str(uuid4()), 1,
+        read = await run_turn(runner, sid, str(uuid4()), 1,
                                     result["result_checkpoint_id"], "read", str(uuid4()))
         assert "private-note" in read["text"]
         with pytest.raises(RuntimeError, match="simulated crash"):
-            await runner.run_turn(sid, str(uuid4()), 1,
+            await run_turn(runner, sid, str(uuid4()), 1,
                                   read["result_checkpoint_id"], "write:fail", str(uuid4()))
-        stable = await runner.run_turn(sid, str(uuid4()), 1,
+        stable = await run_turn(runner, sid, str(uuid4()), 1,
                                       read["result_checkpoint_id"], "read", str(uuid4()))
         assert "private-note" in stable["text"]
         other = str(uuid4())
         base = await runner.initialize_thread(other)
-        empty = await runner.run_turn(other, str(uuid4()), 1, base, "read", str(uuid4()))
+        empty = await run_turn(runner, other, str(uuid4()), 1, base, "read", str(uuid4()))
         assert "private-note" not in empty["text"]
         await saver.adelete_thread(sid)
         assert await saver.aget_tuple({"configurable": {"thread_id": sid}}) is None
@@ -63,17 +63,17 @@ async def test_thread_checkpoint_survives_restart_and_isolates_sessions(tmp_path
         runner = AgentRunner(Settings(local_token="t"), model=model, checkpointer=saver)
         base = await runner.initialize_thread(session)
         assert model.seen == []
-        first = await runner.run_turn(session, str(uuid4()), 1, base, "小明", str(uuid4()))
+        first = await run_turn(runner, session, str(uuid4()), 1, base, "小明", str(uuid4()))
         assert first["text"] == "小明"
     async with AsyncSqliteSaver.from_conn_string(path) as saver:
         runner = AgentRunner(Settings(local_token="t"), model=LocalModel(), checkpointer=saver)
-        second = await runner.run_turn(
+        second = await run_turn(runner,
             session, str(uuid4()), 1, first["result_checkpoint_id"], "我是谁", str(uuid4())
         )
         assert second["text"] == "小明"
         other = str(uuid4())
         base = await runner.initialize_thread(other)
-        result = await runner.run_turn(other, str(uuid4()), 1, base, "独立", str(uuid4()))
+        result = await run_turn(runner, other, str(uuid4()), 1, base, "独立", str(uuid4()))
         assert result["text"] == "独立"
 
 
@@ -87,10 +87,10 @@ async def test_native_summary_keeps_referenced_original_history(tmp_path, monkey
         sid = str(uuid4())
         base = await runner.initialize_thread(sid)
         first_id = str(uuid4())
-        first = await runner.run_turn(sid, first_id, 1, base, "original", str(uuid4()))
+        first = await run_turn(runner, sid, first_id, 1, base, "original", str(uuid4()))
         head = first["result_checkpoint_id"]
         for i in range(4):
-            result = await runner.run_turn(sid, str(uuid4()), 1, head, f"next {i}", str(uuid4()))
+            result = await run_turn(runner, sid, str(uuid4()), 1, head, f"next {i}", str(uuid4()))
             head = result["result_checkpoint_id"]
         state = await runner.graph.aget_state({"configurable": {
             "thread_id": sid, "checkpoint_id": head}})

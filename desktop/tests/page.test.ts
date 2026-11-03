@@ -30,3 +30,22 @@ it('edits the title inside the sidebar and saves with a checkmark',async()=>{
  expect(mock.api.renameSession).toHaveBeenCalledWith(session.id,'New')
  expect(page.find('.inline-title').exists()).toBe(false);page.unmount()
 })
+it.each(['completed','failed','abandoned'] as const)('stops showing a live clock after a run is %s',async(status)=>{
+ vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']})
+ const session=makeSession(),mock=mockApi([session]);window.melo=mock.api
+ const page=mount(AgentPage)
+ try {
+  await flushPromises()
+  await page.get('textarea').setValue('hello');await page.get('form.composer').trigger('submit');await flushPromises()
+  await vi.advanceTimersByTimeAsync(2000);await flushPromises()
+  expect(page.get('.run-activity summary').text()).toContain('本轮开始于')
+  const rid=vi.mocked(mock.api.sendTurn).mock.calls[0][1].turn_id
+  if(status==='completed')mock.complete(rid)
+  else mock.runs.set(rid,{...mock.runs.get(rid)!,status})
+  await vi.advanceTimersByTimeAsync(1000);await flushPromises()
+  expect(page.get('.run-activity summary').text()).not.toContain('本轮开始于')
+  const summary=page.get('.run-activity summary').text()
+  await vi.advanceTimersByTimeAsync(10000);await flushPromises()
+  expect(page.get('.run-activity summary').text()).toBe(summary)
+ }finally{page.unmount();vi.useRealTimers()}
+})

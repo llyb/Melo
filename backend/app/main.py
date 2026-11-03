@@ -18,7 +18,6 @@ from starlette.responses import JSONResponse
 from app.agent import AgentRunner, InvalidOutputError
 from app.obsidian import Obsidian
 from app.runs import RunManager
-from app.schemas import ChatRequest
 from app.session_api import register_sessions
 from app.sessions import SessionCatalog
 from app.settings import Settings
@@ -56,8 +55,6 @@ def create_app(settings: Settings | None = None, runner=None, obsidian=None) -> 
                     await asyncio.to_thread(app.state.runner.close)
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.state.chat_timeout = 60
-    app.state.busy = False
     app.state.runner = runner
     app.state.runner_injected = runner is not None
     register_sessions(app, settings, ChatError)
@@ -143,40 +140,5 @@ def create_app(settings: Settings | None = None, runner=None, obsidian=None) -> 
     @app.get("/api/v1/health")
     async def health():
         return {"status": "ok", "model_configured": settings.model_configured}
-
-    @app.post("/api/v1/chat")
-    async def chat(payload: ChatRequest, request: Request):
-        if app.state.busy:
-            raise ChatError(429, "RATE_LIMITED", "服务繁忙，请稍后重试。", True)
-        if not app.state.runner_injected and not settings.model_configured:
-            raise ChatError(503, "MODEL_NOT_CONFIGURED", "请在后端配置模型 API Key。")
-        manager = getattr(app.state, "runs", None)
-        if manager:
-            async with manager.lock:
-                if app.state.busy or not manager.capacity():
-                    raise ChatError(429, "RATE_LIMITED", "最多5个会话同时运行。", True)
-                manager.legacy_active += 1
-        app.state.busy = True
-        try:
-            if app.state.runner is None:
-                app.state.runner = AgentRunner(settings, checkpointer=getattr(app.state, "saver", None), obsidian=getattr(app.state, "obsidian", None))
-            async with asyncio.timeout(app.state.chat_timeout):
-                text = await app.state.runner.reply(payload.messages, request_id=request.state.request_id)
-            if not isinstance(text, str) or not text.strip() or len(text) > 16000:
-                raise InvalidOutputError
-            return {"request_id": request.state.request_id,
-                    "message": {"role": "assistant", "content": text}}
-        except (TimeoutError, openai.APITimeoutError, GraphRecursionError):
-            raise ChatError(504, "MODEL_TIMEOUT", "模型响应超时，请重试。", True) from None
-        except (openai.AuthenticationError, openai.PermissionDeniedError):
-            raise ChatError(502, "MODEL_AUTH_ERROR", "模型认证失败，请检查后端配置。") from None
-        except openai.RateLimitError:
-            raise ChatError(429, "RATE_LIMITED", "模型服务限流，请稍后重试。", True) from None
-        except (openai.APIError, InvalidOutputError):
-            raise ChatError(502, "UPSTREAM_ERROR", "模型服务暂时不可用，请重试。", True) from None
-        finally:
-            app.state.busy = False
-            if manager:
-                manager.legacy_active -= 1
 
     return app

@@ -1,3 +1,5 @@
+> 2026-11-03用户修订：仅保留一个Agent图及会话/run入口，删除旧/chat、reply和旧DTO。暂不设置Agent全轮时限、模型请求超时或图步数上限（原生循环使用infinity禁用默认有限上限）。spent仅为指标，不参与恢复准入；5会话并发、同会话一轮未决、MCP网络超时和修改审批有效期保留。下文旧兼容/60或120秒/10或25步规则为历史，已被本条覆盖。测试覆盖单次构图、31模型调用/30工具循环、超高spent恢复与旧路由404。
+
 > 2026-11-02 catalog v2 新增临时 run_inputs、200项run_events与mutation_receipts；接受元数据/输入/首事件同事务，输入checkpoint引用保存后清除outbox。rename/head/publish字段在短BEGIN IMMEDIATE事务读改写，禁止旧快照回写覆盖新标题/版本。最后核对回执与解除needs_reconciliation同事务；v1升级保留历史，备份/回退复制完整停止后的data目录。
 > 有外部副作用时不从base全轮重跑。MCP写前落executing，成功后succeeded；应答或回执提交不确定则先核对。相同tool_call_id/参数hash回放成功回执不再写。启动先捕获最新原生checkpoint，再分流未知回执；等待审批保留，其他中断需手动恢复。无外部回执且未审批的终态无效回答允许从base新attempt；checkpoint有效终态仅重发目录发布，不重调模型。删除会话不删除或回滚Obsidian笔记。
 

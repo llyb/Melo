@@ -20,7 +20,6 @@ TERMINAL = {"completed", "failed", "abandoned"}
 
 class RunManager:
     limit = 5
-    time_limit = 120
 
     def __init__(self, app, settings, Error):
         self.app, self.settings, self.Error = app, settings, Error
@@ -28,7 +27,6 @@ class RunManager:
         self.tasks = {}
         self.lock = asyncio.Lock()
         self.previews = {}
-        self.legacy_active = 0
 
     async def db(self, method, *args, **kwargs):
         return await asyncio.to_thread(getattr(self.store, method), *args, **kwargs)
@@ -40,7 +38,7 @@ class RunManager:
         return self.app.state.runner
 
     def capacity(self):
-        return sum(not t.done() for t in self.tasks.values()) + self.legacy_active < self.limit
+        return sum(not t.done() for t in self.tasks.values()) < self.limit
 
     def conflict(self, code, message):
         return self.Error(409, code, message)
@@ -140,9 +138,7 @@ class RunManager:
                 if path is not None:
                     path = str(path).replace("\n", " ")[:240]
                 await self.db("event", rid, kind, label, path)
-            remaining = max(0, self.time_limit - run.get("spent", 0))
-            async with asyncio.timeout(remaining):
-                result = await self.runner().execute_run(run, content, event, decisions, resume)
+            result = await self.runner().execute_run(run, content, event, decisions, resume)
             await self.capture(rid)
             if result.get("paused"):
                 approvals = [{"id": str(uuid4()), "index": i, "decision": None,
@@ -274,8 +270,6 @@ class RunManager:
                 raise self.conflict("RUN_ACTIVE", "本会话已有另一轮未决运行。")
             if not self.capacity():
                 raise self.Error(429, "RATE_LIMITED", "最多5会话运行，请稍后手动继续。", True)
-            if run.get("spent", 0) >= self.time_limit:
-                raise self.conflict("RUN_BUDGET_EXHAUSTED", "活跃预算已用尽，请结束本轮。")
             decisions = None
             if run["status"] == "awaiting_approval":
                 if reprepare:

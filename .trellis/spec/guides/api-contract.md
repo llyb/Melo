@@ -1,3 +1,5 @@
+> 2026-11-03用户修订：仅保留一个Agent图及会话/run入口，删除旧/chat、reply和旧DTO。暂不设置Agent全轮时限、模型请求超时或图步数上限（原生循环使用infinity禁用默认有限上限）。spent仅为指标，不参与恢复准入；5会话并发、同会话一轮未决、MCP网络超时和修改审批有效期保留。下文旧兼容/60或120秒/10或25步规则为历史，已被本条覆盖。测试覆盖单次构图、31模型调用/30工具循环、超高spent恢复与旧路由404。
+
 > 2026-11-02 后台 run 合同覆盖下文旧同步 turns 与全局 busy 约定。`POST /sessions/{id}/turns` 接受相同负载，先落盘再返回 202 `{run_id,turn_id,session_id,status}`。run_id=turn_id，稳定 ID 幂等。SessionSummary 增加 active_run；详情增加 failed_turns（最近20条，仅run_id/content），保留 pending_turn。
 > `GET /runs/{id}?after_seq=0` 返回身份、session、status、created_at/updated_at/spent、受控 error、最多200项 events/cursor/gap、messages/content、approvals/mutations。事件只含seq/kind/label/at/path及三种身份，不含正文或原始参数；环形保留200条。状态为 accepted/running/awaiting_approval/interrupted/needs_reconciliation/completed/failed/abandoned。
 > `POST /runs/{id}/approvals/{aid}` 接受 `{decision:approve|reject}`；`POST /runs/{id}/resume|reprepare-approval|end` 接受严格 `{}`；`GET /runs/{id}/reconciliation/{call}` 只返回id/path/observed_version/matches_target，POST 接受 `{decision:accept_current,observed_version}`。核对不宣称执行成功，不自动重写。`GET /obsidian/status` 与 `POST /obsidian/recheck {}` 仅返回 enabled/status/write_supported。

@@ -46,7 +46,7 @@ async def test_five_sessions_background_navigation_and_atomic_rename(tmp_path, m
         assert (await client.get(f"/api/v1/sessions/{ids[0]}")).status_code == 200
         assert (await client.patch(f"/api/v1/sessions/{ids[0]}", json={"title": "manual"})).status_code == 200
         assert (await client.delete(f"/api/v1/sessions/{ids[0]}")).status_code == 409
-        assert (await client.post('/api/v1/chat', json={'messages': [{'role': 'user', 'content': 'legacy'}]})).status_code == 429
+        assert (await client.post('/api/v1/chat', json={'messages': [{'role': 'user', 'content': 'legacy'}]})).status_code == 404
         assert (await client.post(f"/api/v1/sessions/{ids[0]}/turns", json=bodies[0])).status_code == 202
         gate.set()
         for body in bodies[:5]:

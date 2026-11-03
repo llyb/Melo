@@ -8,9 +8,8 @@ import requests
 from langsmith import Client
 
 from app.agent import AgentRunner
-from app.schemas import Message
 from app.settings import Settings
-from tests.test_agent import LocalModel
+from tests.test_agent import LocalModel, run_text
 
 
 class RecordingSession(requests.Session):
@@ -130,7 +129,7 @@ async def test_metrics_only_real_sdk_transport_has_usage_and_request_id(agent_id
     with capture_client(session, batched=batched):
         runner = AgentRunner(configured_settings(langsmith_agent_id=agent_id), model=UsageModel())
         try:
-            assert await runner.reply([Message(role="user", content="private-body")],
+            assert await run_text(runner, ["private-body"],
                                       request_id=request_id) == "private-body"
         finally:
             runner.close()
@@ -162,7 +161,7 @@ async def test_error_trace_does_not_export_exception_body():
         runner = AgentRunner(configured_settings(), model=FailedModel())
         try:
             with pytest.raises(RuntimeError):
-                await runner.reply([Message(role="user", content="private-body")])
+                await run_text(runner, ["private-body"])
         finally:
             runner.close()
     text = json.dumps(session.payloads)
@@ -175,7 +174,7 @@ async def test_monitoring_upload_failure_does_not_break_chat():
     with capture_client(RecordingSession(fail=True)):
         runner = AgentRunner(configured_settings(), model=LocalModel())
         try:
-            assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+            assert await run_text(runner, ["hello"]) == "hello"
         finally:
             runner.close()
 
@@ -214,21 +213,21 @@ async def test_http_request_id_matches_trace_and_shutdown_closes_client(tmp_path
 async def test_disabled_monitoring_does_not_create_sdk_client():
     with patch("app.agent.Client") as client:
         runner = AgentRunner(Settings(local_token="t"), model=LocalModel())
-        assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+        assert await run_text(runner, ["hello"]) == "hello"
         runner.close()
         client.assert_not_called()
 
 
 async def test_disabled_monitoring_ignores_inactive_destination():
     runner = AgentRunner(Settings(local_token="t", langsmith_agent_id="INVALID ID"), model=LocalModel())
-    assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+    assert await run_text(runner, ["hello"]) == "hello"
 
 
 async def test_ambient_sdk_conflict_disables_only_monitoring(monkeypatch, caplog):
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
     monkeypatch.setenv("LANGSMITH_RUNS_ENDPOINTS", '{"https://other.test":"other-key"}')
     runner = AgentRunner(configured_settings(), model=LocalModel())
-    assert await runner.reply([Message(role="user", content="hello")]) == "hello"
+    assert await run_text(runner, ["hello"]) == "hello"
     assert runner._trace_client is None
     assert "LangSmith monitoring disabled" in caplog.text
     assert "test-langsmith-secret" not in caplog.text
@@ -248,11 +247,11 @@ async def test_actual_openai_compatible_model_serialization_is_metrics_only():
     async with httpx.AsyncClient(transport=httpx.MockTransport(completion)) as model_http:
         model = ChatOpenAI(model="glm-5.3", api_key="model-secret",
                            base_url="https://api.z.ai/api/paas/v4", use_responses_api=False,
-                           http_async_client=model_http, max_retries=0)
+                           http_async_client=model_http, max_retries=0, disable_streaming=True)
         with capture_client(session):
             runner = AgentRunner(configured_settings(), model=model)
             try:
-                assert await runner.reply([Message(role="user", content="private-prompt")]) == "private-reply"
+                assert await run_text(runner, ["private-prompt"]) == "private-reply"
             finally:
                 runner.close()
     payload = json.dumps(session.payloads)

@@ -93,6 +93,7 @@ async def test_startup_recovers_pre_checkpoint_outbox_without_calling_model(tmp_
         assert state['status'] == 'interrupted'
         assert state['content'] == 'durable input'
         assert not model.seen
+        restored.state.catalog.patch_run(rid, spent=1000000)
         assert (await client.post(f'/api/v1/runs/{rid}/resume', json={})).status_code == 200
         assert (await terminal(client, rid))['status'] == 'completed'
 

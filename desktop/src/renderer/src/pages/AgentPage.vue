@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useChat } from '../composables/useChat'
 import ChatMessage from '../components/ChatMessage.vue'
 import { validText, type ObsidianStatus, type RunStatus, type Reconciliation } from '../../../shared/chat'
@@ -23,8 +23,14 @@ async function checkObsidian(reconnect=false){checkingObsidian.value=true;try{co
 async function checkService(){try{const r=await window.melo.health();connected.value=r.ok&&r.data.model_configured;service.value=r.ok?(r.data.model_configured?'本地服务已连接':'模型尚未配置'):r.error.message}catch{service.value='桌面连接异常';connected.value=false}}
 const labels:Record<RunStatus,string>={accepted:'已接受',running:'正在思考与执行',awaiting_approval:'等待确认',interrupted:'已中断，待恢复',needs_reconciliation:'笔记写入待核对',completed:'已完成',failed:'失败',abandoned:'已结束'}
 const snapshot=computed(()=>run.value&&'approvals' in run.value?run.value:null)
-const now=ref(Date.now());const ticker=setInterval(()=>{now.value=Date.now()},1000);onUnmounted(()=>clearInterval(ticker))
-const elapsed=computed(()=>snapshot.value?.created_at?Math.max(0,Math.floor((now.value-Date.parse(snapshot.value.created_at))/1000)):0)
+const now=ref(Date.now())
+watch(sending,(active,_previous,onCleanup)=>{
+ now.value=Date.now()
+ if(!active)return
+ const ticker=setInterval(()=>{now.value=Date.now()},1000)
+ onCleanup(()=>clearInterval(ticker))
+},{immediate:true})
+const elapsed=computed(()=>sending.value&&snapshot.value?.created_at?Math.max(0,Math.floor((now.value-Date.parse(snapshot.value.created_at))/1000)):0)
 const checkingState=computed(()=>snapshot.value&&['accepted','running'].includes(snapshot.value.status)&&now.value-Date.parse(snapshot.value.updated_at??'')>10000)
 const inspections=ref<Record<string,Reconciliation>>({})
 async function inspect(call:string){const rid=run.value?.run_id;const value=await inspectMutation(call);if(value&&run.value?.run_id===rid)inspections.value[call]=value}
